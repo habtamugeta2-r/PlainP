@@ -16,7 +16,7 @@
 ## TL;DR — the six things that matter most
 
 > **M0 status (2026-10-31): ✅ complete.** All twelve P0 items below are
-> implemented and covered by tests: the suite is now **83 tests**, `./plain
+> implemented and covered by tests: the suite is now **88 tests**, `./plain
 > check` stays green with visible notes for future syntax, `./plain fmt
 > --check` is clean, `./plain validate` enforces committed node/SVG floors,
 > and the preview has per-browser sessions. **M1 has started:** `post` /
@@ -42,7 +42,8 @@
 5. **Resources and actions cannot complete** (`P0-06`, `NET-01…07`):
    `post` is unimplemented and its error is misleading; chat send and form
    submit cannot run. Sidecar JSON is a good seam — finish behind it.
-   **✅ preflight shipped in M0**; real HTTP remains Stage 3.
+   **✅ preflight shipped in M0; requests use fixtures or real http(s) in
+   M1**; caching/refresh landed, retry/streaming remain.
 6. **The docs currently overstate the implementation** (`P0-11`,
    `P0-12`). Fix the counts, make `validate` fail, gate `fmt --check`,
    and keep the honest-deferred-list discipline that makes Doc 06 good.
@@ -127,7 +128,7 @@ and "22 tests" — both stale.
 | Parser | full corpus, G-1…G-10 | ◐ 9/9 parse, most constructs | defaults, variant kinds, `together`, `use`, themes, `whenever`, `every` |
 | Checker | Doc 03 §10 | ◐ node/prop/look/action-name diagnostics, did-you-mean | no action bodies, no names in expressions, no types, no exhaustiveness |
 | Runtime | Doc 03 §6, ADR-3 | ◐ state, `is`, actions, `keep`, nav stack, hot reload | recompute-on-read, no dep graph, no async/results |
-| Resources | Doc 01 §3.1, §6.5 | ◐ sidecar JSON, `loading/ready/failed` matching | no HTTP, cache, retry, offline, streams, `refresh` |
+| Resources | Doc 01 §3.1, §6.5 | ◐ sidecar/HTTP `ready/failed`, memory cache, `refresh`, `ErrorBox retry` | no `loading`, retry/backoff, offline queue, streams; unresolved resources fail honestly |
 | Scene | Doc 02 §1 | ◐ 19 of 31 declared node kinds, components, looks, `when` | slot interactions broken, only `ErrorBox` stdlib, no keyed identity |
 | Layout | Doc 02 §2 (Flow) | ◐ column/row/stack/grid/scroll/table, grow/align/spread | container widths are viewport-derived; culling, logical axes, `at`, `spread around` missing |
 | Paint | Doc 02 §3 | ◐ deterministic SVG | no shadows/gradients/borders/images/animation/3D |
@@ -402,7 +403,7 @@ signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
 
 ```text
 $ PYTHONPATH=src python3 -m unittest discover -s tests
-Ran 83 tests in 0.7s — OK
+Ran 88 tests in 1.7s — OK
 
 $ ./plain check examples/*.plain
 9/9 OK + honest notes (gestures/transition/theme/use are declared, not faked)
@@ -638,28 +639,33 @@ cannot drift again (P0-11/P0-12).
 
 ## 6. Resources, networking, async
 
-- [ ] **NET-01 · Real HTTP resources** — `P1 · L`. Replace sidecar
-      providers with `GET` via stdlib `http.client`/`urllib` behind a
-      capability handle; JSON decode; content-type handling; timeouts.
-      Keep sidecars as offline fixtures.
-- [ ] **NET-02 · Cache** — `P1 · L`. Key by (capability, address, accept);
-      dedupe concurrent fetches; stale-while-revalidate; ETag/If-None-Match;
-      memory + disk bounds with eviction.
+- [ ] **NET-01 · Real HTTP resources** — `P1 · L`. ◐ **basic GET shipped
+      (M1):** `urllib`, 10 s timeout, JSON by content-type, `HTTPError` →
+      `server <code>`, sidecars kept as offline fixtures. Remaining:
+      capability handle, headers/query, redirect policy.
+- [ ] **NET-02 · Cache** — `P1 · L`. ◐ **memory cache shipped (M1):**
+      keyed `(scope path, resource name, resolved address)`, reused across
+      renders, dropped by `refresh`. Remaining: key by `(capability, address, accept)`, dedupe
+      concurrent fetches, stale-while-revalidate, ETag/If-None-Match,
+      disk bounds with eviction.
 - [ ] **NET-03 · Retry & backoff** — `P1 · M`. Bounded exponential
       backoff; cancel on navigation; surface the final `Reason` plainly.
 - [ ] **NET-04 · Offline queue & optimistic mutations** — `P1 · L`. Queue
       `post` while offline, replay on reconnect, reconcile responses;
       `on tap: posts add draft, sync` semantics.
-- [ ] **NET-05 · `loading/ready/failed` lifecycle** — `P1 · M`. States are
-      real values; `when` sees `loading` immediately; a failed fetch never
-      masquerades as "no data source is connected in this prototype".
-- [ ] **NET-06 · `refresh x` and `retry`** — `P1 · S`. Wire `retry refresh
-      messages` (currently an inert prop) and the G-10 spelling.
+- [ ] **NET-05 · `loading/ready/failed` lifecycle** — `P1 · M`. ◐
+      `ready/failed` are real values and a failed fetch gets its own sentence.
+      Remaining: `loading` (fetches are synchronous today), so `when` cannot
+      see `loading` before data arrives.
+- [x] **NET-06 · `refresh x` and `retry`** — `P1 · S`. `refresh x` drops the
+      cached value and fetches once (unknown `x` is a plain error); an
+      `ErrorBox … retry refresh x` prop now dispatches that refresh on tap.
 - [ ] **NET-07 · Streaming `from live`** — `P1 · L`. SSE/WebSocket
       transport, reconnect, ordered append, backpressure; `loading` until
       the first frame; `stick-to-bottom` honored.
-- [ ] **NET-08 · Request builder** — `P1 · M`. `post` with body, headers,
-      method, query; Result return; no ambient credentials.
+- [ ] **NET-08 · Request builder** — `P1 · M`. ◐ `post`/`fetch` with body
+      and method return Results and send no ambient credentials. Remaining:
+      author-supplied headers and query building.
 - [ ] **NET-09 · Boundary validation** — `P1 · M`. Validate JSON against
       the declared `kind`; a mismatch is a `failed` resource with a plain
       sentence naming the field, never a crash. Fixes TS's erased-types
@@ -1271,8 +1277,12 @@ submit; themes change pixels; `keep` migrates; a11y tree is complete;
 - [x] Example 04 send and example 06 submit run their actions and take the
       honest offline failure branch; example 08's `cart add … then show toast`
       is parsed/executed (its fixture-level `cart`/`Chair` gaps are separate).
-- [ ] Cache / retry / streaming (`NET-02/03/07`), `refresh` (`NET-06`),
-      headers/query builder (`NET-08` remainder), success page in example 06.
+- [x] Resource memory cache + `refresh` + honest absolute-URL failure
+      (`NET-02` core, `NET-05` ready/failed, `NET-06`), with `ErrorBox retry`
+      dispatching a refresh.
+- [ ] Retry/backoff (`NET-03`), streaming `from live` (`NET-07`), cache
+      eviction/ETag (`NET-02` remainder), headers/query builder (`NET-08`
+      remainder), success page in example 06.
 
 **Milestone M2 — "competitive engine" (2–3 months).**
 Rust slices 3–4 (`RS-01…05,09`), Flow completion (`LAY-06…14`),

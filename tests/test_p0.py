@@ -321,14 +321,14 @@ class TestP006ActionPreflight(unittest.TestCase):
         app.tap(btn.path)
         self.assertEqual(app.runtime.toasts, ["hi"])
 
-    def test_refresh_is_a_plain_stage_3_message(self):
+    def test_refresh_unknown_resource_is_plain(self):
         app = App('page Home at "/":\n  to r:\n    refresh x\n'
                   '  column:\n    button "b" on tap r\n')
         app.build()
         btn = [n for n in app.scene.walk() if n.kind == "button"][0]
-        with self.assertRaises(UnsupportedYet) as caught:
+        with self.assertRaises(PlainError) as caught:
             app.tap(btn.path)
-        self.assertIn("refresh", caught.exception.message)
+        self.assertIn("no resource called `x`", caught.exception.message)
 
 
 # ---------------------------------------------------------------- P0-07

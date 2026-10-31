@@ -12,6 +12,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from plainlang.render import App
 
 class _Handler(BaseHTTPRequestHandler):
+    requests = 0
+
     def log_message(self, fmt, *args):
         pass
 
@@ -24,6 +26,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        type(self).requests += 1
         if self.path == "/data":
             return self._json({"name": "Ada", "role": "engineer"})
         return self._json({"_error": "not found"}, 404)
@@ -158,6 +161,94 @@ page Done(account) at "/done":
         self.tap_button(app, "Add")
         self.assertEqual(app.runtime.scopes["page:Home"].state["cart"], ["x"])
         self.assertEqual(app.runtime.toasts, ["Added ✓"])
+
+    def test_http_resource_caches_until_refresh(self):
+        _Handler.requests = 0
+        app = App(f'''page Home at "/":
+  data from "{self.base}/data"
+  to reload:
+    refresh data
+  column:
+    when data:
+      is ready value: text "{{value.name}}"
+      is failed why: text why
+    button "Reload" on tap reload
+''')
+        app.build(400, 600)
+        self.assertIn("Ada", [n.text for n in app.scene.walk() if n.text])
+        self.assertEqual(_Handler.requests, 1)
+        key = next(k for k in app.runtime.resource_cache
+                   if k.startswith("page:Home:data:"))
+        cached = app.runtime.resource_cache[key]
+        app.build(400, 600)                    # cache hit: same tuple, no GET
+        self.assertEqual(_Handler.requests, 1)
+        self.assertIs(app.runtime.resource_cache[key], cached)
+        btn = [n for n in app.scene.walk() if n.kind == "button"][0]
+        app.tap(btn.path)
+        self.assertEqual(_Handler.requests, 2)
+        self.assertEqual(app.runtime.resource_meta[key]["attempts"], 2)
+
+    def test_resource_cache_keys_by_address(self):
+        # Two params of the same page must not share one cached resource.
+        app = App('''page RoomPage(room) at "/rooms/{room.id}":
+  messages from "/rooms/{room.id}/messages"
+  column:
+    when messages:
+      is ready value: text "count {value.n}"
+''', providers={"/rooms/r1/messages": {"n": 1},
+                   "/rooms/r2/messages": {"n": 2}})
+        page = app.program.pages["RoomPage"]
+        one = app.builder.build_page(page, {"room": {"id": "r1"}})
+        two = app.builder.build_page(page, {"room": {"id": "r2"}})
+        self.assertIn("count 1", [n.text for n in one.walk()])
+        self.assertIn("count 2", [n.text for n in two.walk()])
+
+    def test_error_box_retry_refreshes(self):
+        app = App('''page Home at "/":
+  data from "/api/data"
+  column:
+    when data:
+      is ready value: text "ok {value.v}"
+      is failed why: ErrorBox why retry refresh data
+''', providers={"/api/data": {"_failed": "nope"}})
+        app.build(400, 600)
+        self.assertIn("⚠ nope", [n.text for n in app.scene.walk() if n.text])
+        box = [n for n in app.scene.walk() if n.kind == "box"][0]
+        app.providers["/api/data"] = {"v": 9}
+        app.tap(box.path)
+        app.build(400, 600)
+        self.assertIn("ok 9", [n.text for n in app.scene.walk() if n.text])
+
+    def test_error_box_retry_keeps_page_params(self):
+        app = App('''page RoomPage(room) at "/rooms/{room.id}":
+  messages from "/rooms/{room.id}/messages"
+  column:
+    when messages:
+      is ready value: text "ok {value.n}"
+      is failed why: ErrorBox why retry refresh messages
+''', providers={"/rooms/r1/messages": {"_failed": "nope"}},
+            page_params={"room": {"id": "r1"}})
+        app.build(400, 600)
+        box = [n for n in app.scene.walk() if n.kind == "box"][0]
+        app.providers["/rooms/r1/messages"] = {"n": 3}
+        app.tap(box.path)
+        app.build(400, 600)
+        self.assertIn("ok 3", [n.text for n in app.scene.walk() if n.text])
+        self.assertTrue(any(k.endswith(":/rooms/r1/messages")
+                            for k in app.runtime.resource_cache))
+
+    def test_refresh_unknown_resource_is_plain(self):
+        from plainlang.errors import PlainError
+        app = App('''page Home at "/":
+  to reload:
+    refresh nope
+  column:
+    button "Reload" on tap reload
+''')
+        app.build(400, 600)
+        with self.assertRaises(PlainError) as caught:
+            app.tap([n for n in app.scene.walk() if n.kind == "button"][0].path)
+        self.assertIn("no resource called `nope`", caught.exception.message)
 
     def test_http_error_becomes_failed(self):
         app = App(f'''page Home at "/":

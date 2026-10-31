@@ -71,7 +71,7 @@ PLAIN
 ├── rust/ ............................. Production engine port (ADR-1):
 │                                        slices 1–2 (tokens/parser/checker)
 │                                        green in CI — status: Doc 06 §8
-├── tests/ ............................ 83 spec-oracle tests (`make test`)
+├── tests/ ............................ 88 spec-oracle tests (`make test`)
 │                                        + Rust parity tests in rust/tests/
 └── plain ............................. The CLI: `./plain run|check|render|a11y|fmt|validate`
 ```
@@ -83,7 +83,7 @@ PLAIN
 ./plain run examples/01-counter.plain           # → http://localhost:8000
 ./plain render examples/00-hello-world.plain --out hello.svg
 ./plain a11y examples/01-counter.plain          # a11y tree, derived free
-make test                                       # 83 tests
+make test                                       # 88 tests
 ```
 
 No install, no dependencies, no build step (Doc 03 §10 honored by the
@@ -115,7 +115,8 @@ resolved by implementation and recorded as spec amendments (Doc 06 §5).
 Actions now run too: `post` / `fetch` return `ok`/`failed` results, `when`
 matches them, and `then` / `show toast` execute. Requests use sidecar
 fixtures or real http(s); with neither, the program gets an honest offline
-sentence. Caching, retry, streaming and non-tap gestures remain Stage 2–3.
+sentence. Resources cache in memory and `refresh` re-fetches; retry,
+streaming and non-tap gestures remain Stage 2–3.
 The examples remain normative — every disagreement found so far was fixed
 in the *implementation/spec*, never by editing an example. Plainness is
 tested by reading (and now, running) real programs.

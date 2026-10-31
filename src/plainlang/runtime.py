@@ -73,24 +73,37 @@ class Navigate(Exception):
 
 
 # Resource values are ("ready", data) | ("failed", reason) | ("loading", None)
-def _resource_match(decl: ResourceDecl, providers: dict):
-    """Prototype data providers (sidecar JSON / tests). Matching: exact,
-    then {param}-collapsed, then last path segment."""
+def _provider_lookup(source: str, providers: dict):
+    """Sidecar/fixture value for a resource address, or None.
+
+    Matching is exact, then `{param}`-collapsed, then last path segment —
+    the same rule the preview has always used for sidecars.
+    """
     if not providers:
+        return None
+    exact = [source, re.sub(r"\{[^}]*\}", "*", source)]
+    # Exact and `{param}`-collapsed keys win over the loose last-segment
+    # fallback, so `/rooms/r2/messages` never picks r1's fixture.
+    for cand in exact:
+        for key, val in providers.items():
+            if key == cand or re.sub(r"\{[^}]*\}", "*", str(key)) == cand:
+                return val
+    last = source.rstrip("/").rsplit("/", 1)[-1]
+    for key, val in providers.items():
+        if str(key).rstrip("/").rsplit("/", 1)[-1] == last:
+            return val
+    return None
+
+
+def _resource_match(decl: ResourceDecl, providers: dict):
+    """Resolve a sidecar resource; unmatched resources are an honest failure."""
+    val = _provider_lookup(decl.source.strip().strip('"'), providers)
+    if val is None:
         return ("failed",
                 "no data source is connected in this prototype yet")
-    source = decl.source.strip().strip('"')
-    candidates = [source]
-    collapsed = re.sub(r"\{[^}]*\}", "*", source)
-    candidates.append(collapsed)
-    candidates.append(source.rstrip("/").rsplit("/", 1)[-1])
-    for key, val in providers.items():
-        kcol = re.sub(r"\{[^}]*\}", "*", str(key))
-        if key in candidates or kcol in candidates or str(key).rsplit("/", 1)[-1] == candidates[-1]:
-            if isinstance(val, dict) and val.get("_failed"):
-                return ("failed", str(val["_failed"]))
-            return ("ready", val)
-    return ("failed", "no data source is connected in this prototype yet")
+    if isinstance(val, dict) and val.get("_failed"):
+        return ("failed", str(val["_failed"]))
+    return ("ready", val)
 
 
 class Scope:
@@ -122,6 +135,8 @@ class Runtime:
         self._store: dict | None = None
         self.toasts: list[str] = []
         self.last_request: dict | None = None
+        self.resource_cache: dict[str, tuple] = {}
+        self.resource_meta: dict[str, dict] = {}
 
     # -- persistence (`keep`) ---------------------------------------------
     @property
@@ -213,12 +228,14 @@ class Runtime:
             elif isinstance(stmt, ResourceDecl):
                 self.shared[stmt.name] = _resource_match(stmt, self.providers)
 
-    def env_for(self, sc: Scope, extra: dict | None = None) -> dict:
+    def env_for(self, sc: Scope, extra: dict | None = None,
+                resources: bool = True) -> dict:
         """Read-view: shared + state + derived (recomputed) + locals."""
         env = dict(self.shared)
         env.update(sc.state)
-        for name, decl in sc.resources.items():
-            env[name] = _resource_match(decl, self.providers)
+        if resources:
+            for name, decl in sc.resources.items():
+                env[name] = self._resource_value(sc, decl, extra)
         if extra:
             env.update(extra)
         for d in sc.derived:  # decl order: later may use earlier
@@ -281,9 +298,9 @@ class Runtime:
         self._preflight_src(text, line_no, col, text)
 
     def _preflight_src(self, text: str, line_no, col=None, raw=""):
-        # `post`/`fetch`/`then`/`show toast` execute for real as of M1.
-        # `refresh` still has no resource-cache to refresh (NET-06).
-        pass
+        # Every action statement has an implementation as of M1. Keep this
+        # hook: a future statement must fail before earlier ones mutate state.
+        return
 
     def _preflight_stmt(self, stmt):
         if isinstance(stmt, AssignStmt):
@@ -292,10 +309,6 @@ class Runtime:
         elif isinstance(stmt, RawStmt):
             text = stmt.text.strip()
             self._preflight_src(text, stmt.line_no, stmt.col, stmt.raw or text)
-            if text.startswith("refresh "):
-                raise UnsupportedYet("`refresh …`", "Stage 3",
-                                     stmt.line_no, stmt.raw or text,
-                                     col=stmt.col, length=len("refresh"))
             self.preflight(stmt.children)
         elif isinstance(stmt, IfNode):
             if stmt.inline_then:
@@ -306,6 +319,60 @@ class Runtime:
             body = stmt.body if isinstance(stmt, ForNode) else [
                 s for br in stmt.branches for s in br.body]
             self.preflight(body)
+
+    # -- resources: cache + refresh (NET-01/02/05/06 subset) ----------------
+    def _resource_key(self, sc: Scope, decl: ResourceDecl, extra) -> str:
+        # The address is part of the key: one page scope may render different
+        # params (`/rooms/r1` vs `/rooms/r2`) without sharing stale data.
+        return f"{sc.path}:{decl.name}:{self._resource_address(sc, decl, extra)}"
+
+    def _resource_address(self, sc: Scope, decl: ResourceDecl, extra) -> str:
+        src = decl.source.strip()
+        if src.startswith("live "):
+            src = src[len("live "):].strip()
+        env = self.env_for(sc, extra, resources=False)
+        try:
+            val = evaluate_text(src, env, self.program.kinds, decl.line_no)
+            return str(val)
+        except PlainError:
+            return src.strip('"')
+
+    def _resource_value(self, sc: Scope, decl: ResourceDecl, extra=None,
+                        force: bool = False) -> tuple:
+        key = self._resource_key(sc, decl, extra)
+        if not force and key in self.resource_cache:
+            return self.resource_cache[key]
+        value = self._load_resource(sc, decl, extra)
+        self.resource_cache[key] = value
+        meta = self.resource_meta.setdefault(key, {"attempts": 0})
+        meta["attempts"] += 1
+        meta["value"] = value[0]
+        return value
+
+    def _load_resource(self, sc: Scope, decl: ResourceDecl, extra=None) -> tuple:
+        address = self._resource_address(sc, decl, extra)
+        fixture = _provider_lookup(address, self.providers)
+        if fixture is not None:
+            if isinstance(fixture, dict) and fixture.get("_failed"):
+                return ("failed", str(fixture["_failed"]))
+            return ("ready", fixture)
+        if address.startswith(("http://", "https://")):
+            tag, value = _http_request("GET", address, None, "empty",
+                                       decl.line_no)
+            # Resources carry `ready`, request Results carry `ok`.
+            return ("ready" if tag == "ok" else tag, value)
+        return ("failed",
+                f"no data source is connected for {address} in this prototype")
+
+    def refresh(self, sc: Scope, name: str, extra=None, line_no=None):
+        """`refresh messages` — drop the cached value and fetch once."""
+        decl = sc.resources.get(name)
+        if decl is None:
+            raise PlainError(
+                f"There's no resource called `{name}` to refresh.",
+                line_no=line_no,
+                hint=f"resources are declared as `{name} from \"/path\"`")
+        return self._resource_value(sc, decl, extra, force=True)
 
     def exec_text(self, sc: Scope, text: str, extra, line_no):
         """Execute an inline one-liner like `count += 1` / `add-task`."""
@@ -544,6 +611,10 @@ class Runtime:
             if isinstance(name, dict):
                 name = name.get("page") or name.get("title")
             raise Navigate(str(name), [])
+        if text.startswith("refresh "):
+            self.refresh(sc, text[len("refresh "):].strip(), extra,
+                         stmt.line_no)
+            return
         if text.startswith("show toast"):
             msg = evaluate_text(text[len("show toast"):].strip(),
                                 self.env_for(sc, extra), self.program.kinds,
@@ -565,6 +636,8 @@ class Runtime:
         self._shared_ready = False
         self.toasts.clear()
         self.last_request = None
+        self.resource_cache.clear()
+        self.resource_meta.clear()
 
 
 def _take_url_source(rest: str, line_no=None) -> tuple[str, str]:
