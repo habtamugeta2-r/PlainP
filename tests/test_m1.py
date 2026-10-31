@@ -15,15 +15,19 @@ class _Handler(BaseHTTPRequestHandler):
     requests = 0
     flaky_hits = 0
     post_flaky_hits = 0
+    etag_hits = 0
+    etag_conditional = 0
 
     def log_message(self, fmt, *args):
         pass
 
-    def _json(self, obj, status=200):
+    def _json(self, obj, status=200, etag=None):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if etag:
+            self.send_header("ETag", etag)
         self.end_headers()
         self.wfile.write(body)
 
@@ -36,6 +40,15 @@ class _Handler(BaseHTTPRequestHandler):
             if type(self).flaky_hits < 3:
                 return self._json({"_error": "try later"}, 503)
             return self._json({"name": "Ada"})
+        if self.path == "/etag":
+            type(self).etag_hits += 1
+            if self.headers.get("If-None-Match") == '"v1"':
+                type(self).etag_conditional += 1
+                self.send_response(304)
+                self.send_header("ETag", '"v1"')
+                self.end_headers()
+                return
+            return self._json({"name": "Ada"}, etag='"v1"')
         return self._json({"_error": "not found"}, 404)
 
     def do_POST(self):
@@ -282,6 +295,47 @@ page Done(account) at "/done":
         self.assertIn("ok 3", [n.text for n in app.scene.walk() if n.text])
         self.assertTrue(any(k.endswith(":/rooms/r1/messages")
                             for k in app.runtime.resource_cache))
+
+    def test_refresh_revalidates_with_etag(self):
+        _Handler.etag_hits = 0
+        _Handler.etag_conditional = 0
+        app = App(f'''page Home at "/":
+  data from "{self.base}/etag"
+  to reload:
+    refresh data
+  column:
+    when data:
+      is ready value: text "{{value.name}}"
+      is failed why: text why
+    button "Reload" on tap reload
+''')
+        app.build(400, 600)
+        self.assertIn("Ada", [n.text for n in app.scene.walk() if n.text])
+        self.assertEqual((_Handler.etag_hits, _Handler.etag_conditional), (1, 0))
+        key = next(k for k in app.runtime.resource_cache
+                   if k.startswith("page:Home:data:"))
+        self.assertEqual(app.runtime.resource_meta[key]["etag"], '"v1"')
+        app.tap([n for n in app.scene.walk() if n.kind == "button"][0].path)
+        app.build(400, 600)
+        self.assertIn("Ada", [n.text for n in app.scene.walk() if n.text])
+        self.assertEqual((_Handler.etag_hits, _Handler.etag_conditional), (2, 1))
+        self.assertEqual(app.runtime.resource_meta[key]["attempts"], 2)
+
+    def test_resource_cache_evicts_oldest(self):
+        app = App('''page RoomPage(room) at "/rooms/{room.id}":
+  messages from "/rooms/{room.id}/messages"
+  column:
+    when messages:
+      is ready value: text "count {value.n}"
+''', providers={"/rooms/*/messages": {"n": 1}})
+        page = app.program.pages["RoomPage"]
+        for i in range(130):
+            app.builder.build_page(page, {"room": {"id": f"r{i}"}})
+        self.assertEqual(len(app.runtime.resource_cache), 128)
+        self.assertEqual(len(app.runtime.resource_meta), 128)
+        keys = list(app.runtime.resource_cache)
+        self.assertFalse(any(k.endswith(":/rooms/r0/messages") for k in keys))
+        self.assertTrue(any(k.endswith(":/rooms/r129/messages") for k in keys))
 
     def test_refresh_unknown_resource_is_plain(self):
         from plainlang.errors import PlainError

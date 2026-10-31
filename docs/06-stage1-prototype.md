@@ -37,7 +37,7 @@ Doc 03 (spec amendment) or in §5 below.
 ./plain render examples/00-hello-world.plain --out hello.svg
 ./plain run    examples/01-counter.plain        # http://localhost:8000 — click +1
 ./plain a11y   examples/01-counter.plain        # derived accessibility tree
-make test                                       # 90 tests, <2s
+make test                                       # 92 tests, <2s
 ```
 
 The `run` preview shows the app, its full source, the derived a11y tree and
@@ -103,11 +103,11 @@ the number).
 
 **Still deferred (render raises `UnsupportedYet` naming its stage):**
 a configurable retry policy, streaming `from live`, request headers/query
-builders, animation/springs + page transitions (declared, ignored),
-gestures beyond tap, themes as author data (built-in palette), `shared sync`
-CRDTs,
-scroll viewport culling, HarfBuzz shaping/wrapping polish, non-`ErrorBox`
-stdlib components, the Rust/GPU production engine (ADR-1/5 — §7).
+builders, cache dedupe/stale-while-revalidate/disk, animation/springs +
+page transitions (declared, ignored), gestures beyond tap, themes as author
+data (built-in palette), `shared sync` CRDTs, scroll viewport culling,
+HarfBuzz shaping/wrapping polish, non-`ErrorBox` stdlib components, the
+Rust/GPU production engine (ADR-1/5 — §7).
 
 **Exit-criteria scoreboard (Doc 05):** Stage 1 ✅ (Hello World <5 min;
 byte-identical SVG; ~4.9k LOC ≪ 60k budget). Stage 2 ✅ in prototype
@@ -166,12 +166,13 @@ gestures raise `UnsupportedYet` if fired); `refresh x` forces one refetch
 on tap. Safe GETs (`fetch` and resources) retry transient failures three
 times with 50→100 ms backoff; `POST` never auto-retries, so a write cannot
 be silently duplicated. Text metrics remain the deterministic approximation.
-Resources are cached in memory per `(scope, name, resolved address)`; a
-resource over real http(s) is fetched on first use and reused until
-`refresh`. `post` / `fetch` execute through a request seam: sidecar keys
-`"POST /path"` / `"FETCH /path"` or real http(s), returning `ok`/`failed`
-results consumed by `when`; `then` and `show toast` work in
-actions. Without a fixture/transport a request returns a plain offline
+Resources are cached in memory per `(scope, name, resolved address)`, bounded
+at 128 entries with LRU eviction; a resource over real http(s) is fetched on
+first use and reused until `refresh`. A refresh sends `If-None-Match` when an
+ETag was seen, and a `304` keeps the cached value. `post` / `fetch` execute
+through a request seam: sidecar keys `"POST /path"` / `"FETCH /path"` or real
+http(s), returning `ok`/`failed` results consumed by `when`; `then` and
+`show toast` work in actions. Without a fixture/transport a request returns a plain offline
 sentence — never a crash and never a fake success.
 **Known example defect:** example 08's Add-to-cart line references an
 undeclared `cart` list and a `Chair(…)` kind that the file never defines.

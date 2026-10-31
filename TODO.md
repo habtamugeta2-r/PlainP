@@ -16,7 +16,7 @@
 ## TL;DR — the six things that matter most
 
 > **M0 status (2026-10-31): ✅ complete.** All twelve P0 items below are
-> implemented and covered by tests: the suite is now **90 tests**, `./plain
+> implemented and covered by tests: the suite is now **92 tests**, `./plain
 > check` stays green with visible notes for future syntax, `./plain fmt
 > --check` is clean, `./plain validate` enforces committed node/SVG floors,
 > and the preview has per-browser sessions. **M1 has started:** `post` /
@@ -403,7 +403,7 @@ signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
 
 ```text
 $ PYTHONPATH=src python3 -m unittest discover -s tests
-Ran 90 tests in 1.9s — OK
+Ran 92 tests in 1.9s — OK
 
 $ ./plain check examples/*.plain
 9/9 OK + honest notes (gestures/transition/theme/use are declared, not faked)
@@ -644,9 +644,10 @@ cannot drift again (P0-11/P0-12).
       capability handle, headers/query, redirect policy.
 - [ ] **NET-02 · Cache** — `P1 · L`. ◐ **memory cache shipped (M1):**
       keyed `(scope path, resource name, resolved address)`, reused across
-      renders, dropped by `refresh`. Remaining: key by `(capability, address, accept)`, dedupe
-      concurrent fetches, stale-while-revalidate, ETag/If-None-Match,
-      disk bounds with eviction.
+      renders, bounded at 128 entries with LRU eviction. `refresh` sends
+      `If-None-Match`; a `304` keeps the cached value and its ETag. Remaining:
+      key by `(capability, address, accept)`, dedupe concurrent fetches,
+      stale-while-revalidate, disk bounds.
 - [ ] **NET-03 · Retry & backoff** — `P1 · M`. ◐ **safe-GET retries shipped
       (M1):** 3 attempts, 50→100 ms exponential backoff, only for transient
       statuses (408/425/429/5xx) and transport failures; the final failure is
@@ -1286,9 +1287,12 @@ submit; themes change pixels; `keep` migrates; a11y tree is complete;
       dispatching a refresh.
 - [x] Bounded retry/backoff for safe GETs (`NET-03` core): 3 attempts on
       transient statuses/transport errors; POST is never replayed.
+- [x] ETag revalidation on `refresh` plus a bounded LRU cache (`NET-02` core):
+      128 entries, conditional GET, `304` keeps the cached value.
 - [ ] Streaming `from live` (`NET-07`), configurable retry/`Retry-After`
-      (`NET-03` remainder), cache eviction/ETag (`NET-02` remainder),
-      headers/query builder (`NET-08` remainder), success page in example 06.
+      (`NET-03` remainder), dedupe/stale-while-revalidate/disk (`NET-02`
+      remainder), headers/query builder (`NET-08` remainder), success page in
+      example 06.
 
 **Milestone M2 — "competitive engine" (2–3 months).**
 Rust slices 3–4 (`RS-01…05,09`), Flow completion (`LAY-06…14`),

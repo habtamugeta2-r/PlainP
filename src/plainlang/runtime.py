@@ -341,29 +341,54 @@ class Runtime:
     def _resource_value(self, sc: Scope, decl: ResourceDecl, extra=None,
                         force: bool = False) -> tuple:
         key = self._resource_key(sc, decl, extra)
-        if not force and key in self.resource_cache:
-            return self.resource_cache[key]
-        value = self._load_resource(sc, decl, extra)
-        self.resource_cache[key] = value
         meta = self.resource_meta.setdefault(key, {"attempts": 0})
+        cached = self.resource_cache.get(key)
+        if not force and cached is not None:
+            # LRU touch: reuse moves the entry to the newest end.
+            self.resource_cache.pop(key)
+            self.resource_cache[key] = cached
+            return cached
+        value, etag = self._load_resource(sc, decl, extra, cached,
+                                          meta.get("etag"))
+        self.resource_cache.pop(key, None)
+        self.resource_cache[key] = value
         meta["attempts"] += 1
         meta["value"] = value[0]
+        if etag is not None:
+            meta["etag"] = etag
+        elif value[0] == "ready":
+            meta.pop("etag", None)  # a fresh 200 without ETag invalidates it
+        while len(self.resource_cache) > _RESOURCE_CACHE_LIMIT:
+            oldest = next(iter(self.resource_cache))
+            self.resource_cache.pop(oldest)
+            self.resource_meta.pop(oldest, None)
         return value
 
-    def _load_resource(self, sc: Scope, decl: ResourceDecl, extra=None) -> tuple:
+    def _load_resource(self, sc: Scope, decl: ResourceDecl, extra=None,
+                       cached=None, etag=None) -> tuple[tuple, str | None]:
+        """Load one resource: fixture, conditional HTTP GET, or honest fail."""
         address = self._resource_address(sc, decl, extra)
         fixture = _provider_lookup(address, self.providers)
         if fixture is not None:
             if isinstance(fixture, dict) and fixture.get("_failed"):
-                return ("failed", str(fixture["_failed"]))
-            return ("ready", fixture)
+                return ("failed", str(fixture["_failed"])), None
+            return ("ready", fixture), None
         if address.startswith(("http://", "https://")):
+            out: dict = {}
+            conditional = {"If-None-Match": etag} if etag else None
             tag, value = _http_request("GET", address, None, "empty",
-                                       decl.line_no)
+                                       decl.line_no, extra_headers=conditional,
+                                       meta=out)
+            if tag == "not_modified":
+                if cached is not None:
+                    return cached, out.get("etag") or etag
+                return ("failed", "server 304"), etag
             # Resources carry `ready`, request Results carry `ok`.
-            return ("ready" if tag == "ok" else tag, value)
-        return ("failed",
-                f"no data source is connected for {address} in this prototype")
+            return (("ready" if tag == "ok" else tag, value),
+                    out.get("etag"))
+        return (("failed",
+                 f"no data source is connected for {address} in this prototype"),
+                None)
 
     def refresh(self, sc: Scope, name: str, extra=None, line_no=None):
         """`refresh messages` — drop the cached value and fetch once."""
@@ -672,6 +697,7 @@ def _url_matches(pattern: str, url: str) -> bool:
 
 _HTTP_ATTEMPTS = 3
 _HTTP_BACKOFF = 0.05  # seconds; doubles after each failed safe request
+_RESOURCE_CACHE_LIMIT = 128  # entries; oldest is evicted first
 
 
 def _retryable_status(code: int) -> bool:
@@ -679,17 +705,25 @@ def _retryable_status(code: int) -> bool:
 
 
 def _http_request(method: str, url: str, body, body_kind: str,
-                  line_no=None, retries: bool | None = None):
+                  line_no=None, retries: bool | None = None,
+                  extra_headers: dict | None = None,
+                  meta: dict | None = None):
     """One HTTP exchange. Safe methods retry transient failures.
 
     `GET`/`HEAD` are idempotent, so they get bounded exponential backoff
     (3 attempts, 50 ms then 100 ms). `POST` never retries here: a replay can
     duplicate a write, and offline queueing is a separate primitive (NET-04).
+
+    `extra_headers` lets a resource send `If-None-Match`; `meta` receives
+    response metadata (`etag`, `not_modified`) without changing the public
+    Result tuple.
     """
     if retries is None:
         retries = method in ("GET", "HEAD")
     data = None
     headers = {"Accept": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     if body is not None:
         if body_kind == "json":
             data = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -705,11 +739,17 @@ def _http_request(method: str, url: str, body, body_kind: str,
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 raw = resp.read()
+                if meta is not None:
+                    meta["etag"] = resp.headers.get("ETag")
                 ctype = (resp.headers.get("Content-Type") or "").lower()
                 if "json" in ctype:
                     return ("ok", json.loads(raw.decode("utf-8")))
                 return ("ok", raw.decode("utf-8"))
         except urllib.error.HTTPError as e:
+            if e.code == 304 and meta is not None and extra_headers:
+                e.close()
+                meta["not_modified"] = True
+                return ("not_modified", None)
             if attempt + 1 < attempts and _retryable_status(e.code):
                 e.close()
                 time.sleep(_HTTP_BACKOFF * (2 ** attempt))
