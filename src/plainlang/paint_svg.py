@@ -68,7 +68,6 @@ def _paint(node, out: list[str], tap_prefix):
             out.append(f'<circle cx="{_f(node.x + node.w/2)}" cy="{_f(node.y + node.h/2)}" '
                        f'r="{_f(min(node.w, node.h)/2)}" fill="{bg or "none"}"/>')
         else:
-            shadow = ' filter="url(#)" ' if False else ""
             out.append(f'<rect x="{_f(node.x)}" y="{_f(node.y)}" width="{_f(node.w)}" '
                        f'height="{_f(node.h)}" rx="{_f(corners)}" fill="{bg or "none"}"/>')
         frags = out[-1:]
@@ -131,7 +130,11 @@ def _paint(node, out: list[str], tap_prefix):
     if k == "input":
         ph = node.props.get("placeholder", "")
         val = node.text
-        shown = val if val else ph
+        if "secret" in node.flags and val:
+            # Never paint a password: bullets of the same rough width.
+            shown = "•" * min(len(val), 24)
+        else:
+            shown = val if val else ph
         fill = DEFAULT_THEME["ink"] if val else DEFAULT_THEME["muted"]
         frag = (
             f'<rect x="{_f(node.x)}" y="{_f(node.y)}" width="{_f(node.w)}" '

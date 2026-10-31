@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import a11y as a11y_mod
-from .checker import check_program
+from .checker import check_program, warnings_for
 from .errors import PlainError
 from .parser import parse_program
 from .render import App
@@ -34,11 +34,16 @@ def cmd_check(args) -> int:
             bad += 1
             for e in errors:
                 print(f"{path}:\n{e.render()}\n")
-        else:
-            pages = ", ".join(prog.pages) or "no pages"
-            comps = ", ".join(prog.components) or "no components"
-            print(f"{path}: OK — pages: {pages}; components: {comps}; "
-                  f"needs: {', '.join(prog.needs) or 'nothing'}")
+            continue
+        pages = ", ".join(prog.pages) or "no pages"
+        comps = ", ".join(prog.components) or "no components"
+        warns = warnings_for(prog)
+        suffix = f" ({len(warns)} note{'s' if len(warns) != 1 else ''})" if warns else ""
+        print(f"{path}: OK — pages: {pages}; components: {comps}; "
+              f"needs: {', '.join(prog.needs) or 'nothing'}{suffix}")
+        for w in warns:
+            print("\n".join(f"{path}: {line}" for line in w.render().splitlines()))
+            print()
     return 1 if bad else 0
 
 
@@ -131,6 +136,40 @@ def cmd_validate(args) -> int:
     print(f"|---|---|---|---|---|---|")
     for name, loc, status, nodes, b, ms in rows:
         print(f"| `{name}` | {loc} | {status} | {nodes or '—'} | {b or '—'} | {ms:.1f} |")
+    failed = sum(1 for row in rows if row[2].startswith("ERROR"))
+    if not rows:
+        print("\nvalidate: no files matched.", file=sys.stderr)
+        return 1
+    if failed:
+        print(f"\nvalidate: {failed} of {len(rows)} example(s) failed.",
+              file=sys.stderr)
+        return 1
+    # Golden floor (P0-12): an example may grow, never silently shrink or
+    # stop rendering. The baseline is committed and reviewed.
+    import json
+    base_path = Path(args.baseline)
+    shortfalls = []
+    if base_path.exists():
+        baseline = json.loads(base_path.read_text(encoding="utf-8"))
+        for name, _loc, status, nodes, b, _ms in rows:
+            want = baseline.get(name)
+            if not want:
+                continue
+            if status.startswith("ERROR"):
+                shortfalls.append(f"{name}: {status}")
+            elif nodes < want["nodes"]:
+                shortfalls.append(
+                    f"{name}: {nodes} nodes < baseline {want['nodes']}")
+            elif b < want["svg_bytes"]:
+                shortfalls.append(
+                    f"{name}: {b} SVG bytes < baseline {want['svg_bytes']}")
+    else:
+        print(f"validate: baseline not found at {base_path} (skipped)",
+              file=sys.stderr)
+    if shortfalls:
+        print("\nvalidate: below the committed baseline:\n  " +
+              "\n  ".join(shortfalls), file=sys.stderr)
+        return 1
     return 0
 
 
@@ -201,6 +240,7 @@ def main(argv=None) -> int:
     p.add_argument("pattern", nargs="?", default="examples/*.plain")
     p.add_argument("--width", type=float, default=412)
     p.add_argument("--height", type=float, default=800)
+    p.add_argument("--baseline", default="tests/example_baseline.json")
     p.set_defaults(fn=cmd_validate)
 
     args = ap.parse_args(argv)

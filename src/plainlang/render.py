@@ -9,8 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .checker import check_program
-from .errors import PlainError
+from .checker import SUPPORTED_EVENTS, check_program
+from .errors import PlainError, UnsupportedYet
 from .layout import layout
 from .paint_svg import to_svg
 from .parser import parse_program
@@ -134,6 +134,28 @@ class App:
             self._navigate(nav)
         finally:
             self.runtime.save_kept()
+
+    def fire(self, path: str, event: str):
+        """Deliver a named event (gesture) to a node.
+
+        Stage 1 only dispatches tap/change/submit. Any other valid PL event
+        must fail loudly with `UnsupportedYet`, never pretend it happened.
+        """
+        if self.scene is None:
+            self.build()
+        node = self.scene.find(path)
+        if node is None:
+            raise PlainError(f"Nothing at `{path}` to fire `{event}` on.")
+        if event not in node.events:
+            raise PlainError(f"Nothing here listens for `on {event}`.",
+                             line_no=node.source_line)
+        if event not in SUPPORTED_EVENTS:
+            raise UnsupportedYet(f"`on {event}`", "Stage 3",
+                                 line_no=node.source_line)
+        if event == "tap":
+            return self.tap(path)
+        raise UnsupportedYet(f"`on {event}` dispatch", "Stage 3",
+                             line_no=node.source_line)
 
     def set_field(self, path: str, value: str, submit: bool = False):
         """Type into an `input bind …` (and optionally fire `on submit`)."""

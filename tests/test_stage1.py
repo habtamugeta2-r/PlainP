@@ -7,7 +7,7 @@ from pathlib import Path
 from plainlang import a11y as a11y_mod
 from plainlang.ast_nodes import IfNode, Node
 from plainlang.checker import check_program
-from plainlang.errors import PlainError
+from plainlang.errors import PlainError, UnsupportedYet
 from plainlang.expr import evaluate_text
 from plainlang.parser import parse_program
 from plainlang.render import App
@@ -342,11 +342,19 @@ class TestStage3(unittest.TestCase):
         self.assertEqual(app.stack[-1][0], "Gallery")
 
     def test_form_validation_flow(self):
+        # Derivations are always correct; the UI stays quiet until `touched`.
         app = App.for_file(ROOT / "examples/06-form-validation.plain")
         app.build(500, 800)
+        scope = app.runtime.scopes["page:SignUp"]
+        # Submitting is honestly blocked: the fixture's next step is a real
+        # network call, which is Stage 3 (P0-06). Nothing mutates first.
         btn = [n for n in app.scene.walk()
                if n.kind == "button" and "Create account" in n.text][0]
-        app.tap(btn.path)  # submit empty → touched → errors appear
+        with self.assertRaises(UnsupportedYet):
+            app.tap(btn.path)
+        self.assertFalse(scope.state["touched"])
+        # Derivations are ready; the UI shows them once `touched` is set.
+        scope.state["touched"] = True
         app.build(500, 800)
         texts = [n.text for n in app.scene.walk() if n.text]
         self.assertIn("Please enter your name.", texts)

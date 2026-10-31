@@ -70,7 +70,8 @@ def logical_lines(source: str) -> list[tuple[int, int, str]]:
             raise PlainError(
                 "Tabs for indentation get confusing fast — PL uses 2 spaces "
                 "per level.", line_no=no, line_text=rawline,
-                hint="replace each tab with 2 spaces")
+                hint="replace each tab with 2 spaces",
+                col=rawline.index("\t") + 1, length=1)
         code = T.strip_comment(rawline)
         if not code.strip():
             continue
@@ -87,7 +88,8 @@ def logical_lines(source: str) -> list[tuple[int, int, str]]:
                 f"This line is indented {indent} spaces. PL indents 2 spaces "
                 f"at a time, so this one's halfway between levels.",
                 line_no=no, line_text=text,
-                hint=f"indent it {indent - 1} or {indent + 1} spaces")
+                hint=f"indent it {indent - 1} or {indent + 1} spaces",
+                col=1, length=max(1, len(text.strip())))
     return raw
 
 
@@ -96,7 +98,7 @@ def block_tree(source: str) -> list[Line]:
     stack: list[Line] = []
     for no, indent, text in logical_lines(source):
         level = indent // 2
-        node = Line(text=text, no=no, level=level)
+        node = Line(text=text, no=no, level=level, col=indent + 1)
         while stack and stack[-1].level >= level:
             stack.pop()
         if stack:
@@ -104,7 +106,8 @@ def block_tree(source: str) -> list[Line]:
                 raise PlainError(
                     "This line jumps in more than one level. Indent one "
                     "step (2 spaces) at a time so nesting stays obvious.",
-                    line_no=no, line_text=text)
+                    line_no=no, line_text=text,
+                    col=indent + 1, length=max(1, len(text)))
             stack[-1].children.append(node)
         else:
             roots.append(node)
@@ -126,15 +129,34 @@ _DECL_RE = {
 }
 
 
-def _params(s: str | None) -> list[str]:
+def _param_specs(s: str | None) -> list[tuple[str, str | None]]:
+    """`(name, default_expr)` pairs from a parameter list.
+
+    Defaults are preserved, not discarded: Doc 03 §6.3's
+    `Avatar(person, size = 40)` must actually default size to 40.
+    """
     if not s:
         return []
-    out = []
-    for p in s.split(","):
-        p = p.strip()
-        if p:
-            out.append(p.split("=")[0].split(":")[0].strip())
+    out: list[tuple[str, str | None]] = []
+    for raw in s.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        if "=" in raw:
+            name, default = raw.split("=", 1)
+            out.append((name.split(":")[0].strip(), default.strip()))
+        else:
+            out.append((raw.split(":")[0].strip(), None))
     return out
+
+
+def _params(s: str | None) -> list[str]:
+    return [name for name, _ in _param_specs(s)]
+
+
+def _defaults(s: str | None) -> dict[str, str]:
+    return {name: default for name, default in _param_specs(s)
+            if default is not None}
 
 
 def parse_program(source: str) -> Program:
@@ -156,35 +178,40 @@ def parse_program(source: str) -> Program:
             for ch in ln.children:
                 fm = re.match(r"^([\w-]+)(?:\s*:\s*([^=]+?))?(?:\s*=\s*(.*))?$", ch.text)
                 if fm:
-                    fields.append(KindField(fm.group(1),
-                                            fm.group(2).strip() if fm.group(2) else None,
-                                            fm.group(3).strip() if fm.group(3) else None))
-            prog.kinds[m.group(1)] = KindDecl(m.group(1), fields, ln.no)
+                    fields.append(KindField(
+                        fm.group(1),
+                        fm.group(2).strip() if fm.group(2) else None,
+                        fm.group(3).strip() if fm.group(3) else None,
+                        ch.no, ch.col))
+            prog.kinds[m.group(1)] = KindDecl(m.group(1), fields, ln.no,
+                                              ln.col, ln.text)
         elif m := _DECL_RE["component"].match(t):
             prog.components[m.group(1)] = Component(
                 m.group(1), _params(m.group(2)),
-                par.classify_block(ln.children, context="decls"), ln.no)
+                par.classify_block(ln.children, context="decls"), ln.no,
+                _defaults(m.group(2)), ln.col, ln.text)
         elif m := _DECL_RE["page"].match(t):
             prog.pages[m.group(1)] = Page(
                 m.group(1), _params(m.group(2)), m.group(3),
-                par.classify_block(ln.children, context="decls"), ln.no)
+                par.classify_block(ln.children, context="decls"), ln.no,
+                _defaults(m.group(2)), ln.col, ln.text)
         elif m := _DECL_RE["look"].match(t):
-            look = LookDecl(m.group(1), line_no=ln.no)
+            look = LookDecl(m.group(1), line_no=ln.no, col=ln.col, raw=ln.text)
             for ch in ln.children:
-                holder = Node(kind="box", line_no=ch.no)
+                holder = Node(kind="box", line_no=ch.no, col=ch.col, raw=ch.text)
                 par._prop_loop(T.tokenize(ch.text), holder, ch)
                 look.props += holder.props
                 look.flags += holder.flags
             prog.looks[m.group(1)] = look
         elif _DECL_RE["theme"].match(t):
-            prog.themes.append(RawStmt(t, ln.no, ln.children))
+            prog.themes.append(RawStmt(t, ln.no, ln.children, ln.col, ln.text))
         elif t.startswith("shared "):
             prog.shared_decls.append(par.classify_stmt(ln, context="decls"))
         elif t.startswith("use "):
-            prog.themes.append(RawStmt(t, ln.no))  # modules: Stage 3+
+            prog.uses.append(RawStmt(t, ln.no, [], ln.col, ln.text))
         else:
             # stray top-level line: keep for checker to complain about
-            prog.themes.append(RawStmt(t, ln.no, ln.children))
+            prog.deferred.append(RawStmt(t, ln.no, ln.children, ln.col, ln.text))
     return prog
 
 
@@ -218,24 +245,23 @@ class _Parser:
 
         if head == "to" and (m := _DECL_RE["action"].match(t)):
             return ActionDecl(m.group(1), _params(m.group(2)),
-                              self.classify_block(ln.children, "actions"), ln.no)
+                              self.classify_block(ln.children, "actions"), ln.no,
+                              1, ln.text)
         if head == "keep" and (m := _DECL_RE["keep"].match(t)):
-            return KeepDecl(m.group(1), ln.no)
+            return KeepDecl(m.group(1), ln.no, 1, ln.text)
         if head == "if":
             cond, inline = self._split_colon(t[2:].strip())
             node = IfNode(condition=cond, then_body=self.classify_block(ln.children, context),
-                          line_no=ln.no, inline_then=inline)
+                          line_no=ln.no, inline_then=inline, col=1, raw=ln.text)
             return node
         if head == "otherwise":
             rest = t[len("otherwise"):].strip()
             if rest.startswith("if "):  # otherwise if …  → else containing an If
-                sub = Line(text=rest, no=ln.no, level=ln.level, children=ln.children)
+                sub = Line(text=rest, no=ln.no, level=ln.level,
+                           col=ln.col, children=ln.children)
                 node = self.classify_stmt(sub, context)
-                if out_if := node if isinstance(node, IfNode) else None:
-                    wrapper = IfNode(condition="yes", then_body=[], line_no=ln.no)
-                    wrapper.else_body = [out_if]
-                    # represented via _OTHERWISE_WITH value below
-                    return _OtherwiseBody([out_if])
+                if isinstance(node, IfNode):
+                    return _OtherwiseBody([node])
             if rest in (":", ""):
                 return _OTHERWISE
         if isinstance(_r := self._try_for(ln, context), ForNode):
@@ -250,8 +276,9 @@ class _Parser:
                 if inline:
                     sub = Line(text=inline, no=ch.no, level=ch.level)
                     body = [self.classify_stmt(sub, context)] + body
-                branches.append(WhenBranch(pat.strip(), body, ch.no))
-            return WhenNode(subject.strip(), branches, ln.no)
+                branches.append(WhenBranch(pat.strip(), body, ch.no,
+                                           1, ch.text))
+            return WhenNode(subject.strip(), branches, ln.no, 1, ln.text)
 
         # declarations / assignments
         decl = self._try_decl(ln, toks, context)
@@ -264,7 +291,7 @@ class _Parser:
             return self.parse_node(ln, context)
 
         return RawStmt(t, ln.no, self.classify_block(ln.children, context)
-                       if ln.children else [])
+                       if ln.children else [], 1, ln.text)
 
     def _try_for(self, ln: Line, context: str):
         m = re.match(r"^for\s+([\w-]+)(?:\s*,\s*([\w-]+))?\s+in\s+(.+?):?$", ln.text)
@@ -274,7 +301,8 @@ class _Parser:
         if iterable.endswith(":"):
             iterable = iterable[:-1].strip()
         return ForNode(m.group(1), m.group(2), iterable,
-                       self.classify_block(ln.children, context), ln.no)
+                       self.classify_block(ln.children, context), ln.no,
+                       1, ln.text)
 
     def _split_colon(self, text: str) -> tuple[str, str | None]:
         """Split `head: inline` at a colon token outside quotes/brackets."""
@@ -300,7 +328,8 @@ class _Parser:
         name = work[0].text
         # name from "…"  (resource)
         if len(work) > 1 and work[1].kind == T.NAME and work[1].text == "from":
-            return ResourceDecl(name, T.detokenize(work[2:]), ln.no, shared)
+            return ResourceDecl(name, T.detokenize(work[2:]), ln.no, shared,
+                                1, ln.text)
         # name [: Type] = expr   /   name += expr …
         # The left side may only be names/colons/dots — so a node line like
         # `button "−1" on tap: count -= 1` is never mistaken for a declaration.
@@ -314,19 +343,24 @@ class _Parser:
                 if lhs and lhs[0].kind == T.COLON:
                     type_hint = T.detokenize(lhs[1:])
                 expr = T.detokenize(work[i + 1:])
-                if context == "decls" and tok.text == "=" and not lhs[1:2] == [T.Tok(T.OP, ".")]:
-                    return StateDecl(name, expr, ln.no, type_hint, shared)
+                # A declaration's left side is a bare name or `name: Type`.
+                # `task.done = yes` is an assignment, never a new state name.
+                is_plain_decl = (not lhs) or lhs[0].kind == T.COLON
+                if context == "decls" and tok.text == "=" and is_plain_decl:
+                    return StateDecl(name, expr, ln.no, type_hint, shared,
+                                     1, ln.text)
                 return AssignStmt(T.detokenize(work[:i]).split(":")[0].strip(),
-                                  tok.text, expr, ln.no)
+                                  tok.text, expr, ln.no, 1, ln.text)
             if tok.kind == T.NAME and tok.text == "." :
                 break
         # name is expr  (derived) — LHS must be a single name
         if len(work) > 2 and work[1].kind == T.NAME and work[1].text == "is" \
                 and context == "decls":
-            return DerivedDecl(name, T.detokenize(work[2:]), ln.no)
+            return DerivedDecl(name, T.detokenize(work[2:]), ln.no,
+                               1, ln.text)
         # name add/remove …  (list ops, kept raw for runtime)
         if len(work) > 1 and work[1].kind == T.NAME and work[1].text in ("add", "remove"):
-            return RawStmt(ln.text, ln.no)
+            return RawStmt(ln.text, ln.no, [], 1, ln.text)
         return None
 
     # -- node lines -------------------------------------------------------
@@ -336,7 +370,8 @@ class _Parser:
         if toks and toks[-1].kind == T.COLON:
             toks = toks[:-1]
         kind = toks[0].text
-        node = Node(kind=kind, line_no=ln.no)
+        node = Node(kind=kind, line_no=ln.no, col=toks[0].col, raw=ln.text,
+                    length=len(kind))
         rest = toks[1:]
 
         # inline child after colon: `column ... : spinner`
@@ -432,6 +467,18 @@ class _Parser:
         return i
 
     # -- property loop -------------------------------------------------------
+    @staticmethod
+    def _p(word: str, value: str, toks, i: int, ln: Line) -> Prop:
+        tok = toks[i] if i < len(toks) else None
+        return Prop(word, value, line_no=ln.no,
+                    col=tok.col if tok else None,
+                    length=tok.length if tok else len(word))
+
+    @staticmethod
+    def _f(word: str, tok, ln: Line) -> Flag:
+        return Flag(word, line_no=ln.no, col=tok.col if tok else None,
+                    length=tok.length if tok else len(word))
+
     def _prop_loop(self, toks, node: Node, ln: Line):
         i = 0
         n = len(toks)
@@ -450,8 +497,10 @@ class _Parser:
                 node.events.append(ev)
                 continue
             if t.kind != T.NAME:
-                # stray value (e.g. component positional arg) — keep as arg
-                node.args.append(t.text)
+                # stray value (e.g. component positional arg) — keep as an
+                # expression source so strings stay quoted and numbers stay
+                # numbers when the call is expanded.
+                node.args.append(T.detokenize([t]))
                 i += 1
                 continue
             word = t.text
@@ -476,7 +525,7 @@ class _Parser:
                 continue
             if word in FLAGS:
                 i += 1
-                flag = Flag(word)
+                flag = self._f(word, t, ln)
                 if i < n and toks[i].kind == T.NAME and toks[i].text == "if":
                     cond, i = self._capture_condition(toks, i + 1, params)
                     flag.condition = cond
@@ -491,7 +540,7 @@ class _Parser:
                                         and nxt.text not in params)):
                 i = self._value_prop(word, toks, i, node, ln, free_expr=False)
             else:
-                node.flags.append(Flag(word))
+                node.flags.append(self._f(word, t, ln))
                 i += 1
 
     def _capture_condition(self, toks, i, params=()) -> tuple[str, int]:
@@ -572,7 +621,7 @@ class _Parser:
     def _value_prop(self, word, toks, i, node: Node, ln: Line, free_expr: bool) -> int:
         params = self.sigs.get(node.kind, [])
         value, j = self._value_tokens(toks, i + 1, free_expr, params)
-        prop = Prop(word, value)
+        prop = self._p(word, value, toks, i, ln)
         if j < len(toks) and toks[j].kind == T.NAME and toks[j].text == "if":
             cond, j = self._capture_condition(toks, j + 1, params)
             prop.condition = cond
@@ -593,7 +642,7 @@ class _Parser:
             while j < n and toks[j].kind == T.NUMBER and len(vals) < 4:
                 vals.append(toks[j].text)
                 j += 1
-            node.props.append(Prop("padding", " ".join(vals)))
+            node.props.append(self._p(word, " ".join(vals), toks, i, ln))
             return j
         if word in ("width", "height"):
             j = i + 1
@@ -604,12 +653,12 @@ class _Parser:
                                  ("fill", "fit", "max", "min"))):
                 got.append(toks[j].text)
                 j += 1
-            node.props.append(Prop(word, " ".join(got)))
+            node.props.append(self._p(word, " ".join(got), toks, i, ln))
             return j
         if word == "look":
             params = self.sigs.get(node.kind, [])
             value, j = self._value_tokens(toks, i + 1, False)
-            prop = Prop("look", value)
+            prop = self._p("look", value, toks, i, ln)
             if j < n and toks[j].kind == T.NAME and toks[j].text == "if":
                 cond, j = self._capture_condition(toks, j + 1, params)
                 prop.condition = cond
@@ -628,7 +677,7 @@ class _Parser:
                 j += 1
                 if len(got) >= 2:
                     break
-            node.props.append(Prop("animate", " ".join(got)))
+            node.props.append(self._p(word, " ".join(got), toks, i, ln))
             return j
         if word in ("at", "look-at"):
             j = i + 1
@@ -637,11 +686,11 @@ class _Parser:
                              or toks[j].text == "-"):
                 got.append(toks[j].text)
                 j += 1
-            node.props.append(Prop(word, " ".join(got)))
+            node.props.append(self._p(word, " ".join(got), toks, i, ln))
             return j
         # angle, stagger: single value
         value, j = self._value_tokens(toks, i + 1, False)
-        node.props.append(Prop(word, value))
+        node.props.append(self._p(word, value, toks, i, ln))
         return j
 
     # -- events ---------------------------------------------------------------
@@ -654,9 +703,14 @@ class _Parser:
         if j < n and toks[j].kind == T.NAME and j + 1 < n and toks[j + 1].kind == T.COLON:
             param = toks[j].text
             j += 1
+        start_tok = toks[i] if i < len(toks) else None
+        ev_col = start_tok.col if start_tok else None
+        ev_len = (len(name) + 3) if name else 2
         if j < n and toks[j].kind == T.COLON:
             inline = T.detokenize(toks[j + 1:])
-            return Event(name, param=param, inline=inline or None), n
+            return Event(name, param=param, inline=inline or None,
+                         line_no=ln.no, col=ev_col, length=ev_len,
+                         raw=ln.text), n
         if j < n and toks[j].kind == T.NAME:
             # action call: name [(args)]  — then more props may follow
             k = j + 1
@@ -671,8 +725,12 @@ class _Parser:
                             k += 1
                             break
                     k += 1
-            return Event(name, param=param, action=T.detokenize(toks[j:k])), k
-        return Event(name, param=param), j
+            return Event(name, param=param,
+                         action=T.detokenize(toks[j:k]),
+                         line_no=ln.no, col=ev_col, length=ev_len,
+                         raw=ln.text), k
+        return Event(name, param=param, line_no=ln.no, col=ev_col,
+                     length=ev_len, raw=ln.text), j
 
     def _event_from_line(self, ln: Line, context: str) -> Event:
         toks = T.tokenize(ln.text)
@@ -683,7 +741,8 @@ class _Parser:
             ev.block = self.classify_block(ln.children, "actions")
         elif ev.inline:
             ev.block = [self.classify_stmt(
-                Line(text=ev.inline, no=ln.no, level=ln.level + 1), "actions")]
+                Line(text=ev.inline, no=ln.no, level=ln.level + 1,
+                     col=ln.col), "actions")]
         return ev
 
 

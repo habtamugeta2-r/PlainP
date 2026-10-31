@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import html
 import json
+import threading
 import urllib.parse
+import uuid
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import a11y as a11y_mod
-from .errors import PlainError
+from .checker import warnings_for
+from .errors import PlainError, UnsupportedYet
 from .render import App
 
 _PAGE_CSS = """
@@ -55,7 +59,8 @@ document.addEventListener('click', function(ev){
   ev.preventDefault();
   var body = new URLSearchParams();
   fields.forEach(function(f){ body.set('f_' + f.dataset.path, f.value); });
-  fetch('/sync', {method:'POST', body: body})
+  var size = new URLSearchParams(location.search).get('size') || 'desktop';
+  fetch('/sync?size=' + encodeURIComponent(size), {method:'POST', body: body})
     .then(function(){ location.href = a.href; })
     .catch(function(){ location.href = a.href; });
 });
@@ -69,13 +74,29 @@ SIZES = {
 }
 
 
+def _secret_roots(app: App) -> set[str]:
+    """State names bound to `input … secret` — never print their values."""
+    roots: set[str] = set()
+    if app.scene is None:
+        return roots
+    for n in app.scene.walk():
+        if n.kind == "input" and "secret" in n.flags and n.bind:
+            roots.add(n.bind[0].split(".")[0])
+    return roots
+
+
 def _state_dump(app: App) -> str:
-    dump = {p: dict(sc.state) for p, sc in app.runtime.scopes.items()}
+    redact = _secret_roots(app)
+    dump = {}
+    for p, sc in app.runtime.scopes.items():
+        dump[p] = {k: ("••••••" if k in redact else v)
+                   for k, v in sc.state.items()}
     if app.runtime.shared:
-        dump["shared"] = {k: ("(resource)" if isinstance(v, tuple) else v)
+        dump["shared"] = {k: ("(resource)" if isinstance(v, tuple)
+                              else ("••••••" if k in redact else v))
                           for k, v in app.runtime.shared.items()}
     try:
-        return json.dumps(dump, indent=2, default=str)
+        return json.dumps(dump, indent=2, ensure_ascii=False, default=str)
     except TypeError:
         return str(dump)
 
@@ -100,16 +121,27 @@ def _input_overlays(app: App, size_key: str) -> str:
 
 
 def make_handler(app_path: Path, width: float, height: float):
-    session: dict = {"app": None}
+    # One app/runtime per browser session, not one per server. Two tabs (or
+    # two people) must not share mutable state. All access is serialized by
+    # a lock: ThreadingHTTPServer + one runtime is otherwise a data race.
+    sessions: dict[str, dict] = {}
+    lock = threading.RLock()
+    max_sessions = 32
 
-    def load(size_key: str):
+    def load(sid: str, size_key: str):
         w, h = SIZES.get(size_key, (width, height))
-        app = App.for_file(app_path, persist=True)
-        old = session["app"]
-        if old is not None and not app.errors:
-            app.carry_from(old)
-        session["app"] = app
-        return app, w, h
+        with lock:
+            session = sessions.setdefault(sid, {"app": None})
+            app = App.for_file(app_path, persist=True)
+            old = session.get("app")
+            if old is not None and not app.errors:
+                app.carry_from(old)
+            session["app"] = app
+            if len(sessions) > max_sessions:
+                oldest = next((k for k in sessions if k != sid), None)
+                if oldest is not None:
+                    sessions.pop(oldest, None)
+            return app, w, h
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -117,11 +149,34 @@ def make_handler(app_path: Path, width: float, height: float):
         def log_message(self, fmt, *args):
             pass
 
+        def _sid(self) -> str:
+            if getattr(self, "_sid_value", None):
+                return self._sid_value
+            sid = None
+            raw = self.headers.get("Cookie")
+            if raw:
+                jar = SimpleCookie()
+                try:
+                    jar.load(raw)
+                    if "plainsid" in jar:
+                        sid = jar["plainsid"].value
+                except Exception:  # malformed cookie -> new session
+                    sid = None
+            if not sid:
+                sid = uuid.uuid4().hex
+                self._new_sid = True
+            self._sid_value = sid
+            return sid
+
         def _send(self, code, body, ctype="text/html; charset=utf-8", extra=None):
             data = body.encode("utf-8")
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            if getattr(self, "_new_sid", False):
+                self.send_header(
+                    "Set-Cookie",
+                    f"plainsid={self._sid_value}; Path=/; HttpOnly; SameSite=Lax")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.end_headers()
@@ -131,59 +186,70 @@ def make_handler(app_path: Path, width: float, height: float):
             self._send(302, "", extra={"Location": f"/?size={size_key}"})
 
         def do_POST(self):
+            self._sid()
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path != "/sync":
                 return self._send(404, "not found")
             length = int(self.headers.get("Content-Length", 0))
             form = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            qs = urllib.parse.parse_qs(parsed.query)
+            size_key = (qs.get("size") or form.get("size") or ["desktop"])[0]
             try:
-                app, w, h = load("desktop")
-                app.build(w, h)  # paths are size-stable for inputs
-                for key, vals in form.items():
-                    if key.startswith("f_"):
-                        app.set_field(key[2:], vals[0], submit=False)
+                with lock:
+                    app, w, h = load(self._sid_value, size_key)
+                    app.build(w, h)  # paths are size-stable for inputs
+                    for key, vals in form.items():
+                        if key.startswith("f_"):
+                            app.set_field(key[2:], vals[0], submit=False)
                 self._send(204, "")
             except PlainError as e:
-                self._send(400, e.render(), "text/plain")
+                self._send(501 if isinstance(e, UnsupportedYet) else 400,
+                           e.render(), "text/plain")
+            except Exception as e:  # preview must never white-screen
+                self._send(500, f"Prototype hiccup: {e}", "text/plain")
 
         def do_GET(self):
+            self._sid()
             parsed = urllib.parse.urlparse(self.path)
             qs = urllib.parse.parse_qs(parsed.query)
             size_key = (qs.get("size") or ["desktop"])[0]
             try:
-                app, w, h = load(size_key)
+                with lock:
+                    app, w, h = load(self._sid_value, size_key)
+                    if parsed.path.startswith("/tap/"):
+                        app.build(w, h)
+                        app.tap(urllib.parse.unquote(parsed.path[len("/tap/"):]))
+                        return self._redirect(size_key)
+                    if parsed.path.startswith("/field/"):
+                        app.build(w, h)
+                        app.set_field(
+                            urllib.parse.unquote(parsed.path[len("/field/"):]),
+                            (qs.get("v") or [""])[0], submit=True)
+                        return self._redirect(size_key)
+                    if parsed.path == "/reset":
+                        app.reset()
+                        return self._redirect(size_key)
+                    if parsed.path == "/app.svg":
+                        return self._send(200, app.svg(w, h, tap_prefix="/tap/"),
+                                          "image/svg+xml")
             except PlainError as e:
-                return self._error(e)
+                return self._error(
+                    e, code=501 if isinstance(e, UnsupportedYet) else 400)
             except Exception as e:  # never white-screen the preview
-                return self._error(PlainError(f"Prototype hiccup: {e}"))
+                return self._error(PlainError(f"Prototype hiccup: {e}"), code=500)
 
             try:
-                if parsed.path.startswith("/tap/"):
-                    app.build(w, h)
-                    app.tap(urllib.parse.unquote(parsed.path[len("/tap/"):]))
-                    return self._redirect(size_key)
-                if parsed.path.startswith("/field/"):
-                    app.build(w, h)
-                    app.set_field(urllib.parse.unquote(parsed.path[len("/field/"):]),
-                                  (qs.get("v") or [""])[0], submit=True)
-                    return self._redirect(size_key)
-                if parsed.path == "/reset":
-                    app.reset()
-                    return self._redirect(size_key)
-                if parsed.path == "/app.svg":
-                    return self._send(200, app.svg(w, h, tap_prefix="/tap/"),
-                                      "image/svg+xml")
+                with lock:
+                    svg = app.svg(w, h, tap_prefix="/tap/")
+                    overlays = _input_overlays(app, size_key)
+                    tree = a11y_mod.derive(app.scene)
+                    a11y_text = a11y_mod.render_text(tree) if tree else "(empty)"
+                    warns = warnings_for(app.program)
+                    warn_text = "\n\n".join(w.render() for w in warns) or "(none)"
+                    page_name = app.stack[-1][0] if app.stack else "?"
             except PlainError as e:
-                return self._error(e)
-
-            try:
-                svg = app.svg(w, h, tap_prefix="/tap/")
-                overlays = _input_overlays(app, size_key)
-                tree = a11y_mod.derive(app.scene)
-                a11y_text = a11y_mod.render_text(tree) if tree else "(empty)"
-                page_name = app.stack[-1][0] if app.stack else "?"
-            except PlainError as e:
-                return self._error(e)
+                return self._error(
+                    e, code=501 if isinstance(e, UnsupportedYet) else 400)
             size_links = "".join(
                 f'<a class="{"on" if k == size_key else ""}" href="/?size={k}">'
                 f'{k} {int(v[0])}×{int(v[1])}</a>' for k, v in SIZES.items())
@@ -192,6 +258,7 @@ def make_handler(app_path: Path, width: float, height: float):
 <title>PLAIN — {html.escape(app_path.name)}</title><style>{_PAGE_CSS}</style>
 <header><b>PLAIN</b><span>plain run · {html.escape(app_path.name)} · page {html.escape(page_name)}</span>
 <span>capabilities needed: {html.escape(needs)}</span>
+<span>{len(warns)} note{'s' if len(warns) != 1 else ''}</span>
 <a href="/reset?size={size_key}">reset (clears kept state)</a>
 <a href="/?size={size_key}">reload (state kept)</a></header>
 <div class="sizebar"><span>Viewport:</span>{size_links}
@@ -205,15 +272,17 @@ def make_handler(app_path: Path, width: float, height: float):
 <pre>{html.escape(a11y_text)}</pre></div>
 <div class="panel"><h2>Looking Glass · live state</h2>
 <pre>{html.escape(_state_dump(app))}</pre></div>
+<div class="panel"><h2>Valid PL this prototype does not do yet</h2>
+<pre>{html.escape(warn_text)}</pre></div>
 </div></main>{_SYNC_JS}"""
             self._send(200, body)
 
-        def _error(self, e: PlainError):
+        def _error(self, e: PlainError, code: int = 400):
             body = f"""<!doctype html><meta charset=utf-8><title>PLAIN</title>
 <style>{_PAGE_CSS}</style>
 <header><b>PLAIN</b><span>{html.escape(app_path.name)}</span></header>
 <main style="padding-top:16px"><div class="err">{html.escape(e.render())}</div></main>"""
-            self._send(200, body)
+            self._send(code, body)
 
     return Handler
 

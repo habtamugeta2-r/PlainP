@@ -1,0 +1,38 @@
+{
+  "00-hello-world.plain": {
+    "nodes": 4,
+    "svg_bytes": 535
+  },
+  "01-counter.plain": {
+    "nodes": 8,
+    "svg_bytes": 1154
+  },
+  "02-todo.plain": {
+    "nodes": 13,
+    "svg_bytes": 1633
+  },
+  "03-navbar.plain": {
+    "nodes": 6,
+    "svg_bytes": 873
+  },
+  "04-chat.plain": {
+    "nodes": 22,
+    "svg_bytes": 2389
+  },
+  "05-datatable.plain": {
+    "nodes": 47,
+    "svg_bytes": 7080
+  },
+  "06-form-validation.plain": {
+    "nodes": 14,
+    "svg_bytes": 1811
+  },
+  "07-page-transition.plain": {
+    "nodes": 7,
+    "svg_bytes": 1041
+  },
+  "08-viewer-3d.plain": {
+    "nodes": 20,
+    "svg_bytes": 2212
+  }
+}

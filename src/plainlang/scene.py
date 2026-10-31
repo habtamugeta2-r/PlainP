@@ -224,21 +224,59 @@ class SceneBuilder:
         elif call.content_expr is not None:
             values.append(evaluate_text(call.content_expr, caller_env,
                                         self.program.kinds, call.line_no))
-        values += list(call.args)
+        values += [evaluate_text(arg, caller_env, self.program.kinds,
+                                 call.line_no) for arg in call.args]
+        if len(values) > len(params):
+            extra = len(values) - len(params)
+            raise PlainError(
+                f"`{comp.name}` takes {len(params)} value"
+                f"{'s' if len(params) != 1 else ''}, but got {len(values)}.",
+                line_no=call.line_no, line_text=call.raw or None,
+                col=call.col, length=max(1, len(comp.name)),
+                hint="check the component's parameter list, or pass the "
+                     "extra value as a named property")
         for name, v in zip(params, values):
             bound[name] = v
         for p in call.props:
             if p.name in params:
+                if p.name in bound:
+                    raise PlainError(
+                        f"`{p.name}` is given twice to `{comp.name}`.",
+                        line_no=call.line_no, line_text=call.raw or None,
+                        col=p.col, length=p.length,
+                        hint="pass it once — positionally or by name")
                 if p.condition and not truthy(evaluate_text(
                         p.condition, caller_env, self.program.kinds, call.line_no)):
-                    bound[p.name] = None
-                else:
-                    bound[p.name] = evaluate_text(p.value, caller_env,
-                                                  self.program.kinds, call.line_no)
+                    # Conditioning a param out binds `nothing`, unless a
+                    # default exists (then the default applies below).
+                    if p.name not in getattr(comp, "defaults", {}):
+                        bound[p.name] = None
+                    continue
+                bound[p.name] = evaluate_text(p.value, caller_env,
+                                              self.program.kinds, call.line_no)
+        missing = [p for p in params
+                   if p not in bound and p not in getattr(comp, "defaults", {})]
+        if missing:
+            raise PlainError(
+                f"`{comp.name}` needs `{missing[0]}`.",
+                line_no=call.line_no, line_text=call.raw or None,
+                col=call.col, length=max(1, len(comp.name)),
+                hint=f'pass a value, e.g. `{comp.name} "Ada"`')
+        # Defaults are evaluated in the caller's environment, after explicit
+        # args, so `size = 40` (Doc 03 §6.3) actually applies.
+        for pname in params:
+            if pname in bound:
+                continue
+            default_src = getattr(comp, "defaults", {}).get(pname)
+            if default_src is not None:
+                denv = dict(caller_env)
+                denv.update(bound)
+                bound[pname] = evaluate_text(default_src, denv,
+                                             self.program.kinds, call.line_no)
         inst_path = f"{path}#{comp.name}"
         inst_sc = self.runtime.scope(inst_path, comp)
         slot = self._build_block(_visual(call.children), caller_sc,
-                                 call_scope_path(caller_sc), extra, path + "/slot",
+                                 caller_scope_path, extra, path + "/slot",
                                  None) if call.children else []
         merged_extra = dict(bound)
         return self._build_block(_visual(comp.body), inst_sc, inst_path,
@@ -439,9 +477,3 @@ def _stdlib_error_box(builder, node, env, path, scope_path):
 STDLIB_COMPONENTS = {
     "ErrorBox": _stdlib_error_box,
 }
-
-
-def call_scope_path(sc) -> str:
-    # SceneBuilder tracks scope by object identity in Runtime.scopes; this
-    # helper is only used for slot children event binding metadata.
-    return getattr(sc, "_path_hint", "")

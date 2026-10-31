@@ -17,7 +17,9 @@ jobs:
         run: PYTHONPATH=src python3 -m unittest discover -s tests -v
       - name: Corpus check
         run: ./plain check examples/*.plain
-      - name: Phase-5 validate harness
+      - name: Formatter is canonical
+        run: ./plain fmt --check examples/*.plain
+      - name: Phase-5 validate harness (golden node/SVG floors)
         run: ./plain validate
 
   engine-rust:

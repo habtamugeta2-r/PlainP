@@ -265,16 +265,53 @@ class _Parser:
         return node
 
 
+class _Unit(float):
+    """A number that remembers how it was written (`50%`, `1.5s`, `90deg`).
+
+    It behaves as a float, so arithmetic still works. Keeping the spelling
+    matters for dimensions: `width max 75%` is a percentage of the parent,
+    while `width max 75` is 75 points. Losing the suffix silently turned one
+    into the other.
+    """
+    unit = ""
+
+    def __str__(self):
+        return f"{float(self):g}{self.unit}"
+
+    def __format__(self, spec):
+        return float.__format__(self, spec) if spec else str(self)
+
+    def __repr__(self):
+        return str(self)
+
+
+class Percent(_Unit):
+    unit = "%"
+
+
+class Millis(_Unit):
+    unit = "ms"
+
+
+class Seconds(_Unit):
+    unit = "s"
+
+
+class Degrees(_Unit):
+    unit = "deg"
+
+
 def _number(s: str):
-    mult = 1
-    for suffix in ("ms", "deg", "s", "%"):
-        if s.endswith(suffix):
-            s = s[: -len(suffix)]
-            break
     if "/" in s:  # ratio 4/3 -> keep as (num, den) marker string for aspect
         a, b = s.split("/")
         return ("ratio", float(a), float(b))
-    v = float(s) * mult
+    for suffix, cls in (("ms", Millis), ("deg", Degrees), ("s", Seconds),
+                        ("%", Percent)):
+        if s.endswith(suffix):
+            return cls(float(s[: -len(suffix)]))
+    if s.endswith("dp"):  # density-independent points == the base unit
+        s = s[:-2]
+    v = float(s)
     return int(v) if v.is_integer() else v
 
 
@@ -532,7 +569,7 @@ def _call(name, arg_nodes, kw_nodes, env, kinds, line_no):
     if name == "floor":
         return math.floor(args[0])
     if name in ("post", "fetch"):
-        raise UnsupportedYet("network calls (`post`)", "Stage 3", line_no)
+        raise UnsupportedYet("`post` (network calls)", "Stage 3", line_no)
     if name in ("go",):
         raise UnsupportedYet("navigation calls", "Stage 3", line_no)
     raise PlainError(
