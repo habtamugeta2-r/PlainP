@@ -16,11 +16,44 @@ import re
 from pathlib import Path
 
 from .ast_nodes import (
-    ActionDecl, AssignStmt, DerivedDecl, IfNode, KeepDecl, RawStmt,
-    ResourceDecl, StateDecl,
+    ActionDecl, AssignStmt, DerivedDecl, ForNode, IfNode, KeepDecl, RawStmt,
+    ResourceDecl, StateDecl, WhenNode,
 )
 from .errors import PlainError, UnsupportedYet
 from .expr import evaluate_text, execute_assign, truthy
+
+
+def _has_top_level_word(text: str, word: str) -> bool:
+    """True when `word` appears outside string literals.
+
+    `msg = "first then second"` is data, not a `then` chain; scanning the
+    raw text would have made preflight reject a correct program.
+    """
+    in_str = False
+    escaped = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            i += 1
+            continue
+        if text.startswith(word, i) and (i == 0 or not (
+                text[i - 1].isalnum() or text[i - 1] in "_-")) and (
+                i + len(word) == len(text) or not (
+                text[i + len(word)].isalnum() or text[i + len(word)] in "_-")):
+            return True
+        i += 1
+    return False
 
 
 class _Return(Exception):
@@ -190,6 +223,11 @@ class Runtime:
 
     # -- execution ---------------------------------------------------------
     def run_event(self, sc: Scope, event, extra: dict | None = None):
+        # Refuse unsupported statements BEFORE running any of them: a chat
+        # action must not clear `draft` and then discover `post` is missing.
+        self.preflight(event.block)
+        if event.inline and not event.block:
+            self._preflight_text(event.inline, None)
         try:
             if event.action:
                 self.call_action(sc, event.action, extra)
@@ -213,6 +251,7 @@ class Runtime:
                 f"There's no action called `{name}` here. Actions are "
                 f"written as `to {name}:` in this page/component.",
                 line_no=line_no)
+        self.preflight(act.body)
         locals_ = dict(extra or {})
         if arg_src:
             env = self.env_for(sc, locals_)
@@ -227,6 +266,47 @@ class Runtime:
             pass
         # action-local `name = …` for NEW names stay local; names that are
         # existing state were written through by exec (see below).
+
+    # -- preflight: no partial mutation before an honest failure ------------
+    def preflight(self, stmts):
+        for stmt in stmts or []:
+            self._preflight_stmt(stmt)
+
+    def _preflight_text(self, text: str, line_no, col=None):
+        text = (text or "").strip()
+        self._preflight_src(text, line_no, col, text)
+
+    def _preflight_src(self, text: str, line_no, col=None, raw=""):
+        if re.match(r"^(post|fetch)\b", text):
+            raise UnsupportedYet("`post` (network calls)", "Stage 3",
+                                 line_no, raw or text, col=col,
+                                 length=len(text.split()[0]))
+        if text.startswith("show toast") or _has_top_level_word(text, "then"):
+            raise UnsupportedYet("toasts / `then` chains", "Stage 3",
+                                 line_no, raw or text, col=col,
+                                 length=max(1, len(text.split()[0])))
+
+    def _preflight_stmt(self, stmt):
+        if isinstance(stmt, AssignStmt):
+            self._preflight_src(stmt.expr.strip(), stmt.line_no, stmt.col,
+                                stmt.raw or f"{stmt.target} {stmt.op} {stmt.expr}")
+        elif isinstance(stmt, RawStmt):
+            text = stmt.text.strip()
+            self._preflight_src(text, stmt.line_no, stmt.col, stmt.raw or text)
+            if text.startswith("refresh "):
+                raise UnsupportedYet("`refresh …`", "Stage 3",
+                                     stmt.line_no, stmt.raw or text,
+                                     col=stmt.col, length=len("refresh"))
+            self.preflight(stmt.children)
+        elif isinstance(stmt, IfNode):
+            if stmt.inline_then:
+                self._preflight_text(stmt.inline_then, stmt.line_no, stmt.col)
+            self.preflight(stmt.then_body)
+            self.preflight(stmt.else_body)
+        elif isinstance(stmt, (ForNode, WhenNode)):
+            body = stmt.body if isinstance(stmt, ForNode) else [
+                s for br in stmt.branches for s in br.body]
+            self.preflight(body)
 
     def exec_text(self, sc: Scope, text: str, extra, line_no):
         """Execute an inline one-liner like `count += 1` / `add-task`."""

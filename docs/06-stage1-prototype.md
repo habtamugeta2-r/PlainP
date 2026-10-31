@@ -11,7 +11,7 @@ Stage-1 prototype
 ├── 2. Try it (60 seconds)
 ├── 3. Module map (code ↔ blueprint)
 ├── 4. Implemented vs deferred (honest table, exit criteria)
-├── 5. Grammar decisions forced by implementation (G-1…G-8)
+├── 5. Grammar decisions forced by implementation (G-1…G-10)
 ├── 6. Deliberate divergences from the blueprint
 └── 7. Next: Stage 2 work list + Rust-port mapping
 ```
@@ -37,7 +37,7 @@ Doc 03 (spec amendment) or in §5 below.
 ./plain render examples/00-hello-world.plain --out hello.svg
 ./plain run    examples/01-counter.plain        # http://localhost:8000 — click +1
 ./plain a11y   examples/01-counter.plain        # derived accessibility tree
-make test                                       # 22 tests, <0.1s
+make test                                       # 76 tests, <1.5s
 ```
 
 The `run` preview shows the app, its full source, the derived a11y tree and
@@ -46,7 +46,7 @@ buttons (works with JS disabled — taps are scene-path links), switch
 viewport sizes (incl. a 360×640 "cheap-android" preset, Constraint 6), and
 **keeps state across reloads while applying your edits** (see §6.4).
 
-## 3. Module map (~3.1k LOC incl. tests; well inside the 500k budget)
+## 3. Module map (~5.5k LOC incl. tests; well inside the 500k budget)
 
 | File | Blueprint home | What it does |
 |---|---|---|
@@ -109,7 +109,7 @@ scroll viewport culling, HarfBuzz shaping/wrapping polish, non-`ErrorBox`
 stdlib components, the Rust/GPU production engine (ADR-1/5 — §7).
 
 **Exit-criteria scoreboard (Doc 05):** Stage 1 ✅ (Hello World <5 min;
-byte-identical SVG; ~4k LOC ≪ 60k budget). Stage 2 ✅ in prototype
+byte-identical SVG; ~4.6k LOC ≪ 60k budget). Stage 2 ✅ in prototype
 (00/01/02/03 run as written; todo usable by typing; frame costs are
 CPython numbers, not the Rust budget — noted honestly). Stage 3 ✅ core
 (04–08 render + interact as tested above). Stage 4/5 partially (stdlib
@@ -155,6 +155,13 @@ belongs in Doc 03 at the next spec rev:
   is the resource-unwrap spelling. `refresh x` remains open for the RFC.
 
 Still open: #4 shared-element `id` retention (parsed; animation pending).
+
+**Newly known gaps (now visible as `plain check` notes, never silent):**
+`theme` / `use` are parsed and preserved but not applied; `transition` swaps
+instantly; only `tap`, `change`, and `submit` are dispatched (other valid
+gestures raise `UnsupportedYet` if fired); `post` / `fetch` / `show toast` /
+`then` / `refresh` raise `UnsupportedYet` *before* any state changes
+(preflight, P0-06); text metrics remain the deterministic approximation.
 
 ## 6. Deliberate divergences (prototype simplifications, seams marked)
 

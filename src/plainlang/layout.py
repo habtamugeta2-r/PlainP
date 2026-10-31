@@ -264,8 +264,6 @@ def _measure(node, c: Constraints) -> tuple[float, float]:
             + gap * max(0, len(node.children) - 1)
         node.w = _apply_size(node, "width", content_w + l + r, c.max_w)
         node.h = _apply_size(node, "height", content_h + t + b, c.max_h)
-        if node.w == c.max_w and c.max_w != INF:
-            _stretch_growers(node, horizontal=False)
         return node.w, node.h
 
     if k == "row":
@@ -310,10 +308,6 @@ def _measure(node, c: Constraints) -> tuple[float, float]:
     # unknown leaf: zero-size (checker/engine warnings live elsewhere)
     node.w, node.h = 0.0, 0.0
     return node.w, node.h
-
-
-def _stretch_growers(node, horizontal: bool):
-    pass  # grow distribution happens in _place; measuring stays fit-based
 
 
 # ---- place -----------------------------------------------------------------------
@@ -369,8 +363,6 @@ def _place(node, x: float, y: float):
             elif align == "stretch":
                 ch.w = inner_w
                 _remeasure_stretched(ch)
-            if "grow" in ch.flags and ch.kind in ("input", "scroll", "column", "row"):
-                pass
             if "center-self" in ch.flags:
                 chx = cx + (inner_w - ch.w) / 2
             _place(ch, chx, cur)

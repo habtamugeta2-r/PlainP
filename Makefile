@@ -1,12 +1,18 @@
 # PLAIN Stage-1 prototype — zero dependencies (Python 3.11+ stdlib only).
 PY ?= python3
 
-.PHONY: test check hello counter todo a11y clean
+.PHONY: test check fmt-check validate hello counter todo a11y clean
 test:
 	PYTHONPATH=src $(PY) -m unittest discover -s tests -v
 
 check:
 	./plain check examples/*.plain
+
+fmt-check:
+	./plain fmt --check examples/*.plain
+
+validate:
+	./plain validate
 
 hello:
 	./plain render examples/00-hello-world.plain --out out/hello.svg

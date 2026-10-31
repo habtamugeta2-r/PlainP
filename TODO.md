@@ -15,25 +15,36 @@
 
 ## TL;DR — the six things that matter most
 
+> **M0 status (2026-10-31): ✅ complete.** All twelve P0 items below are
+> implemented and covered by tests: the suite is now **76 tests**, `./plain
+> check` stays green with visible notes for future syntax, `./plain fmt
+> --check` is clean, `./plain validate` enforces committed node/SVG floors,
+> and the preview has per-browser sessions. The Stage-3 network boundary is
+> still deliberate: `post`/`fetch`/toasts/gestures raise `UnsupportedYet`
+> before mutating anything.
+
 1. **The prototype is real.** All 9 examples parse, check, render and
-   34 tests pass. The architecture claims are unusually well matched by
+   34 tests passed (76 after M0). The architecture claims are unusually well matched by
    running code. This backlog is about closing the gap between "renders"
    and "the docs are true", not about starting over.
 2. **Interactivity inside component slots is broken** (`P0-01`). The Form
    example cannot be typed into, and any button inside a `children` slot
-   is dead. This is the single highest-value fix in the repo.
+   is dead. This was the single highest-value fix in the repo. **✅ fixed in M0.**
 3. **Valid PL is silently ignored** (`P0-03`): gestures, `theme:`, `use:`,
    `transition`, unsupported props. Silent no-ops are worse than errors —
-   they make the spec untrustworthy.
+   they make the spec untrustworthy. **✅ fixed in M0** (every one is now a
+   visible note or a loud `UnsupportedYet`).
 4. **The type story is missing** (`EX-01…07`): units are discarded,
    `Money` is a float, `Result`/`Maybe` do not exist, and the checker does
    no name or type analysis. This is Stage 3's real content.
 5. **Resources and actions cannot complete** (`P0-06`, `NET-01…07`):
    `post` is unimplemented and its error is misleading; chat send and form
    submit cannot run. Sidecar JSON is a good seam — finish behind it.
+   **✅ preflight shipped in M0**; real HTTP remains Stage 3.
 6. **The docs currently overstate the implementation** (`P0-11`,
    `P0-12`). Fix the counts, make `validate` fail, gate `fmt --check`,
    and keep the honest-deferred-list discipline that makes Doc 06 good.
+   **✅ fixed in M0** (counts are tested; CI can fail).
 
 **Recommended next move:** ship Milestone M0 (§21), then freeze the Stage-3
 oracle semantics before starting Rust slice 3 (`RS-01`).
@@ -71,9 +82,10 @@ and Doc 06 §1):
 
 ---
 
-## 1. Verified baseline (2026-10-31)
+## 1. Verified baseline (pre-M0 audit, 2026-10-31)
 
-Commands run from the repo root:
+Commands run from the repo root **before M0**. This block is kept as the
+audit record; §1.3 has the post-M0 numbers.
 
 ```text
 $ PYTHONPATH=src python3 -m unittest discover -s tests
@@ -125,7 +137,7 @@ and "22 tests" — both stale.
 | Rust port | ADR-1, Doc 06 §8 | ◐ slices 1–2 (tokens/parser/checker) | expr/runtime/scene/layout/paint/window |
 | Docs | 7 documents | ◐ rich and specific | drift in counts/status; spec amendments not folded in |
 
-### 1.2 Things the docs claim that are not true today
+### 1.2 Pre-M0 findings (all fixed in §2)
 
 Verified, with reproductions:
 
@@ -174,8 +186,12 @@ Verified, with reproductions:
 
 ## 2. P0 — fix before anything else
 
-### P0-01 · Slot children must inherit the caller's scope
+### ✅ P0-01 · Slot children must inherit the caller's scope
 `P0` · `M` · **⚠ bug** · `scene.py:238–245`, `scene.py:444`, `render.py:107`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
+**Residual:** submit navigation waits for NET-01…08; slot scopes, input,
+toggle, button and scoped derivations are covered by `tests/test_p0.py`.
 
 * **Now:** `_expand_component` builds slot children with
   `call_scope_path(caller_sc)`, which returns `""` because `_path_hint` is
@@ -185,13 +201,19 @@ Verified, with reproductions:
   `call_scope_path` and use the string already in scope. Add tests for
   an `input bind`, a `toggle bind`, a `button on tap`, and a scoped
   derivation inside `children`. Add a regression test that types into
-  example 06's three fields and submits successfully.
+  example 06's three fields and reaches the Stage-3 network gate.
 * **Done when:** `./plain run examples/06-form-validation.plain` accepts
-  typing in Name/Email/Password and the submit flow navigates on valid
-  input; a slot button mutates page state.
+  typing in Name/Email/Password and a slot button mutates page state.
+  Navigation after valid input is intentionally blocked by the same
+  Stage-3 network gate as P0-06 (the call raises before mutating), so that
+  half is tracked under NET-01…08 rather than claimed here.
 
-### P0-02 · Component default parameter values
+### ✅ P0-02 · Component default parameter values
 `P0` · `M` · **⚠ bug** · `parser.py:129 _params`, `scene.py:214`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
+**Residual:** default expressions are syntax-checked and evaluated at call
+time; full numeric/type inference is EX-06 (Stage 3), not claimed here.
 
 * **Now:** defaults are stripped at parse time; omitted args are unbound.
 * **Do:** store params as `(name, default_expr | None)`. At call time bind
@@ -202,8 +224,13 @@ Verified, with reproductions:
   `Avatar "Ada"` renders a 40-point avatar; `Avatar "Ada" 56` renders 56;
   missing required args produce a plain sentence with a Try line.
 
-### P0-03 · Never silently ignore syntax
+### ✅ P0-03 · Never silently ignore syntax
 `P0` · `M` · **⚠ bug** · `scene.py:134`, `parser.py:179–187`, `render.py:113`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
+**Residual:** `transition`/`theme`/`use` stay renderable (example 07 must
+render) but are never silent: `plain check` and the preview show notes;
+unsupported gestures raise `UnsupportedYet` when fired.
 
 * **Now:** `transition`, `theme`, `use`, and every unsupported event name
   parse fine and do nothing.
@@ -219,8 +246,10 @@ Verified, with reproductions:
   codebase for `pass  #` and `continue` yields no "declared but ignored"
   paths.
 
-### P0-04 · Stop leaking secrets in paint and preview
+### ✅ P0-04 · Stop leaking secrets in paint and preview
 `P0` · `S` · **⚠ bug** · `paint_svg.py:131`, `server.py:72`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
 
 * **Do:** paint `input secret` as bullets of the same width (never the
   value); redact any state name declared `secret` or bound from a
@@ -230,8 +259,10 @@ Verified, with reproductions:
 * **Done when:** typing into a `secret` field leaves no plaintext in the
   SVG, the state panel, or server logs.
 
-### P0-05 · Make `fmt` trustworthy on the corpus
+### ✅ P0-05 · Make `fmt` trustworthy on the corpus
 `P0` · `M` · **⚠ bug** · `fmt.py`, `tests/test_stage1.py:290`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
 
 * **Now:** `fmt --check` fails 02/06/07. Top-level comments are indented
   into the preceding block; continuation lines are reindented to one
@@ -244,8 +275,10 @@ Verified, with reproductions:
   `fmt --write` twice is a no-op; comment blocks stay with the declaration
   they describe.
 
-### P0-06 · Make action statements dispatch honestly
+### ✅ P0-06 · Make action statements dispatch honestly
 `P0` · `M` · **⚠ bug** · `expr.py:517`, `runtime.py:303`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
 
 * **Now:** `post` never reaches its `UnsupportedYet` branch; `then` is
   captured by the list-add regex; errors are confusing and can leave
@@ -259,8 +292,10 @@ Verified, with reproductions:
   are Stage 3" message and leaves `draft` untouched; example 06's
   `submit` behaves the same.
 
-### P0-07 · Fix/delete dead code paths that hide bugs
+### ✅ P0-07 · Fix/delete dead code paths that hide bugs
 `P0` · `S` · **⚠ bug** · `layout.py:316`, `layout.py:372`, `paint_svg.py:71`,
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
 `parser.py:236`, `parser.py:262`
 
 * `_stretch_growers` is a `pass` no-op that is called as if it does work.
@@ -275,8 +310,12 @@ Verified, with reproductions:
 * **Done when:** `grep -rn "if False\|pass  #\|wrapper =" src/plainlang`
   returns nothing unexplained.
 
-### P0-08 · Checker must visit action bodies
+### ✅ P0-08 · Checker must visit action bodies
 `P0` · `M` · **⚠ bug** · `checker.py:35–57`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
+**Residual:** action bodies get the same node/property/typo checks; full
+defined-name and call-arity analysis remains CHK-02 (Stage 3).
 
 * **Now:** `_check_block` is called on owner bodies but action bodies are
   never traversed, so invalid nodes/props/actions inside `to …:` pass
@@ -288,8 +327,13 @@ Verified, with reproductions:
 * **Done when:** an unknown node inside an action is reported by
   `./plain check`, and all 9 examples stay OK.
 
-### P0-09 · Error spans and carets
+### ✅ P0-09 · Error spans and carets
 `P0` · `M` · **⚠ bug/gap** · `errors.py`, `tokens.py`, `ast_nodes.py`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
+**Residual:** every structural/checker diagnostic carries a span; a few
+expression-value errors (unknown name) still point at the line only until
+CHK-02/EX-06 land.
 
 * **Now:** `PlainError` has `line_no` and `line_text` only; Doc 03 §10's
   canonical error shows a caret under the offending token.
@@ -301,8 +345,12 @@ Verified, with reproductions:
 * **Done when:** every error printed by `plain check` points at the
   exact token, not just the line.
 
-### P0-10 · Fix the preview session model
+### ✅ P0-10 · Fix the preview session model
 `P0` · `M` · **⚠ bug** · `server.py:102–147`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
+**Residual:** `plainsid` is a random HttpOnly cookie (dev preview), not a
+signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
 
 * **Now:** one module-level `session["app"]` shared by all clients; every
   request re-parses and mutates the same runtime; `/sync` hardcodes
@@ -316,8 +364,10 @@ Verified, with reproductions:
   a phone-size preview submits at phone size; concurrent requests cannot
   corrupt a scope.
 
-### P0-11 · Correct the documentation drift
+### ✅ P0-11 · Correct the documentation drift
 `P0` · `S` · **⚠ bug** · `README.md:74,86`, `docs/06:40,49`, `docs/06` TOC
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
 
 * `README` says "22 tests" in the Try-it block while the line above says
   34; `docs/06` repeats 22 and "~3.1k LOC"; §5's TOC says G-1…G-8 while
@@ -328,8 +378,10 @@ Verified, with reproductions:
   the honest deferred list.
 * **Done when:** a reader can trust every number in the README.
 
-### P0-12 · CI must be able to fail
+### ✅ P0-12 · CI must be able to fail
 `P0` · `S` · **⚠ bug** · `cli.py:108`, `.github/workflows/ci.yml`
+
+**Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
 
 * `cmd_validate` always returns 0. CI does not run `fmt --check`, does
   not assert the 9 examples' node/SVG counts, and does not test the
@@ -341,6 +393,29 @@ Verified, with reproductions:
   reason.
 
 ---
+
+### 1.3 Verified after M0 (2026-10-31)
+
+```text
+$ PYTHONPATH=src python3 -m unittest discover -s tests
+Ran 76 tests in 0.7s — OK
+
+$ ./plain check examples/*.plain
+9/9 OK + honest notes (gestures/transition/theme/use are declared, not faked)
+
+$ ./plain fmt --check examples/*.plain
+exit 0 (all 9 examples are canonical)
+
+$ ./plain validate
+exit 0, checked against tests/example_baseline.json (nodes + SVG bytes)
+
+$ cargo --version
+not installed in this sandbox; CI remains the Rust compiler of record
+```
+
+**Code volume (actual after M0):** Python package 4 575 LOC; tests 969 LOC;
+Rust 2 414 LOC (15 `#[test]`s). Docs and CI assert the test count so it
+cannot drift again (P0-11/P0-12).
 
 ## 3. Language front end (lexer · parser · AST)
 
@@ -1150,11 +1225,26 @@ Verified, with reproductions:
 
 ## 21. Suggested execution order
 
-**Milestone M0 — "trustworthy prototype" (1–2 weeks).**
+**Milestone M0 — "trustworthy prototype" (1–2 weeks).** **✅ complete 2026-10-31.**
 `P0-01` → `P0-02` → `P0-03` → `P0-06` → `P0-08` → `P0-09` → `P0-10` →
 `P0-05` → `P0-12` → `P0-11`.
-Exit: example 06 is typeable end-to-end; nothing is silently ignored;
-`fmt --check` and CI mean something; docs tell the truth.
+
+- [x] P0-01 slot children inherit the caller's scope
+- [x] P0-02 component default parameter values
+- [x] P0-03 no valid construct is silently inert
+- [x] P0-04 secrets never painted or dumped
+- [x] P0-05 `fmt` is canonical on the whole corpus
+- [x] P0-06 action statements are classified before any mutation
+- [x] P0-07 dead code removed
+- [x] P0-08 checker visits action bodies
+- [x] P0-09 error spans and carets
+- [x] P0-10 per-client preview sessions (`plainsid`, lock, status codes)
+- [x] P0-11 docs counts are tested and true
+- [x] P0-12 CI can fail (`fmt --check`, golden `validate`, server smoke test)
+
+Exit: example 06's fields are typeable end-to-end (submit stops at the
+documented Stage-3 network gate, untouched state); nothing is silently
+ignored; `fmt --check` and CI mean something; docs tell the truth.
 
 **Milestone M1 — "Stage 3 semantics complete" (4–6 weeks).**
 Units/types (`EX-01…07`), component binding (`FE-05`), themes (`FE-13`),

@@ -34,6 +34,17 @@ RBRACKET = "RBRACKET"
 class Tok:
     kind: str
     text: str
+    start: int = 0          # 0-based char offset in the line
+    end: int = 0            # exclusive end offset
+
+    @property
+    def col(self) -> int:
+        """1-based column, for plain-sentence carets."""
+        return self.start + 1
+
+    @property
+    def length(self) -> int:
+        return max(1, self.end - self.start)
 
     def __repr__(self):  # pragma: no cover - debug aid
         return f"{self.kind}({self.text!r})"
@@ -66,6 +77,10 @@ def strip_comment(raw: str) -> str:
 def tokenize(text: str) -> list[Tok]:
     toks: list[Tok] = []
     i, n = 0, len(text)
+
+    def add(kind: str, value: str, start: int, end: int) -> None:
+        toks.append(Tok(kind, value, start, end))
+
     while i < n:
         c = text[i]
         if c.isspace():
@@ -74,50 +89,50 @@ def tokenize(text: str) -> list[Tok]:
         if c == '"':
             j = text.find('"', i + 1)
             if j == -1:  # unterminated: take the rest (checker reports)
-                toks.append(Tok(STRING, text[i + 1:]))
+                add(STRING, text[i + 1:], i, n)
                 break
-            toks.append(Tok(STRING, text[i + 1:j]))
+            add(STRING, text[i + 1:j], i, j + 1)
             i = j + 1
             continue
         m = _COLOR_RE.match(text, i)
         if m:
-            toks.append(Tok(COLOR, m.group(0)))
+            add(COLOR, m.group(0), i, m.end())
             i = m.end()
             continue
         m = _NUMBER_RE.match(text, i)
         if m and c.isdigit():
-            toks.append(Tok(NUMBER, m.group(0)))
+            add(NUMBER, m.group(0), i, m.end())
             i = m.end()
             continue
         m = _NAME_RE.match(text, i)
         if m:
-            toks.append(Tok(NAME, m.group(0)))
+            add(NAME, m.group(0), i, m.end())
             i = m.end()
             continue
         if text[i:i + 2] in _OPS2:
-            toks.append(Tok(OP, text[i:i + 2]))
+            add(OP, text[i:i + 2], i, i + 2)
             i += 2
             continue
         if c in _OPS1:
-            toks.append(Tok(OP, c))
+            add(OP, c, i, i + 1)
             i += 1
             continue
         if c == ",":
-            toks.append(Tok(COMMA, c))
+            add(COMMA, c, i, i + 1)
         elif c == ":":
-            toks.append(Tok(COLON, c))
+            add(COLON, c, i, i + 1)
         elif c == "(":
-            toks.append(Tok(LPAREN, c))
+            add(LPAREN, c, i, i + 1)
         elif c == ")":
-            toks.append(Tok(RPAREN, c))
+            add(RPAREN, c, i, i + 1)
         elif c == "[":
-            toks.append(Tok(LBRACKET, c))
+            add(LBRACKET, c, i, i + 1)
         elif c == "]":
-            toks.append(Tok(RBRACKET, c))
+            add(RBRACKET, c, i, i + 1)
         else:
             # Any other single char (unicode symbols etc.) becomes a NAME-ish
             # token so nothing downstream crashes on it.
-            toks.append(Tok(NAME, c))
+            add(NAME, c, i, i + 1)
         i += 1
     return toks
 
