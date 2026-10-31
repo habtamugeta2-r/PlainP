@@ -37,14 +37,25 @@ Doc 03 (spec amendment) or in §5 below.
 ./plain render examples/00-hello-world.plain --out hello.svg
 ./plain run    examples/01-counter.plain        # http://localhost:8000 — click +1
 ./plain a11y   examples/01-counter.plain        # derived accessibility tree
-make test                                       # 94 tests, <2s
+make test                                       # 102 tests, <2s
 ```
 
 The `run` preview shows the app, its full source, the derived a11y tree and
 live state side by side (a baby Looking Glass, Doc 01 §6.3), lets you tap
-buttons (works with JS disabled — taps are scene-path links), switch
+buttons (works with JS disabled — taps are scene-path POST forms), switch
 viewport sizes (incl. a 360×640 "cheap-android" preset, Constraint 6), and
 **keeps state across reloads while applying your edits** (see §6.4).
+
+**Preview trust model (`HAB-69`):** `plain run` is a local/sandbox developer
+preview server, never a multi-tenant production web host. All state-mutating
+endpoints (`/tap/*`, `/field/*`, `/sync`, `/reset`) require `POST` (`GET`
+returns `405 Method Not Allowed`), per-session `HttpOnly; SameSite=Lax`
+`plainsid` cookies, constant-time CSRF tokens (`_csrf` / `X-Plain-CSRF`),
+same-origin checks (`Origin` / `Sec-Fetch-Site`, compatible with cloud preview
+proxies), and a 64 KiB `Content-Length` cap (`413`). `secret` inputs never
+echo plaintext into URLs, HTML `value` attributes, SVG output, derived a11y
+trees, or Looking Glass state dumps; headers stay compatible with iframe-based
+preview embedding.
 
 ## 3. Module map (~6.2k LOC incl. tests; well inside the 500k budget)
 
@@ -216,8 +227,8 @@ Rust parity tests on every push/PR.
 
 | Slice | Contents | Status |
 |---|---|---|
-| 1 | `tokens`, block tree, `ast`, `parser` (classification incl. G-1…G-10), `plain-rs check` parse stage | ✅ CI green (9 tests; M0 span/defaults catch-up in `HAB-76`) |
-| 2 | `checker` (core diagnostics + did-you-mean via normalized Levenshtein), `plain-rs check` = parse+check | ✅ CI green (15 tests; M0 action-body/warning catch-up in `HAB-76`, diff harness in `HAB-71`) |
+| 1 | `tokens`, block tree, `ast`, `parser` (classification incl. G-1…G-10 + structured `needs`), `plain-rs check` parse stage | ✅ CI green (10 tests; M0 span/defaults catch-up in `HAB-76`) |
+| 2 | `checker` (core + capability diagnostics + action-body walk + did-you-mean), `plain-rs check` = parse+check | ✅ CI green (17 tests; M0 warning catch-up in `HAB-76`, diff harness in `HAB-71`) |
 | 3 | `expr` parser/evaluator + `runtime` (state/derived/actions/`keep`) | next (`HAB-83`, gated on `HAB-71` + `HAB-72`) |
 | 4 | `scene` + `layout` (Flow) + `a11y` derivation | planned (`HAB-83`) |
 | 5 | Clear paint: wgpu/Vello per ADR-5 (SVG writer first for parity), HarfBuzz text, native window | planned |

@@ -234,3 +234,86 @@ fn checker_corpus_is_clean() {
         );
     }
 }
+
+#[test]
+fn needs_parses_structured_capabilities() {
+    let prog = parse_program(&example("04-chat.plain")).unwrap();
+    assert_eq!(prog.needs, vec!["network chat.example.com".to_string()]);
+    assert_eq!(prog.capabilities.len(), 1);
+    assert_eq!(prog.capabilities[0].kind, "network");
+    assert_eq!(
+        prog.capabilities[0].target.as_deref(),
+        Some("chat.example.com")
+    );
+    assert_eq!(
+        prog.allows_network_url("https://chat.example.com/rooms"),
+        (true, "chat.example.com".to_string())
+    );
+    assert_eq!(
+        prog.allows_network_url("https://evil.example.com/rooms"),
+        (false, "evil.example.com".to_string())
+    );
+
+    let multi = parse_program(
+        "needs network chat.example.com, notifications\npage Home at \"/\":\n  column:\n    text \"hi\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        multi.needs,
+        vec![
+            "network chat.example.com".to_string(),
+            "notifications".to_string()
+        ]
+    );
+    assert_eq!(multi.capabilities.len(), 2);
+    assert_eq!(multi.capabilities[1].kind, "notifications");
+    assert_eq!(multi.capabilities[1].target, None);
+}
+
+#[test]
+fn checker_enforces_capabilities() {
+    let no_storage = check_renders(
+        "page Home at \"/\":\n  tasks = []\n  keep tasks\n  column:\n    text \"hi\"\n",
+    );
+    assert!(
+        no_storage
+            .iter()
+            .any(|m| m.contains("`keep tasks` saves data on this device")
+                && m.contains("needs storage")),
+        "{no_storage:?}"
+    );
+
+    let no_net = check_renders(
+        "page Home at \"/\":\n  feed from \"https://api.example.com/feed\"\n  column:\n    text \"hi\"\n",
+    );
+    assert!(
+        no_net
+            .iter()
+            .any(|m| m.contains("`api.example.com`, which isn't listed in `needs`")),
+        "{no_net:?}"
+    );
+
+    let ok_net = check_renders(
+        "needs network api.example.com\npage Home at \"/\":\n  feed from \"https://api.example.com/feed\"\n  column:\n    text \"hi\"\n",
+    );
+    assert!(ok_net.is_empty(), "{ok_net:?}");
+
+    let bare_net = check_renders("needs network\npage Home at \"/\":\n  column:\n    text \"hi\"\n");
+    assert!(
+        bare_net
+            .iter()
+            .any(|m| m.contains("`needs network` must name the host")),
+        "{bare_net:?}"
+    );
+
+    let wildcard_net = check_renders(
+        "needs network *.example.com\npage Home at \"/\":\n  column:\n    text \"hi\"\n",
+    );
+    assert!(
+        wildcard_net
+            .iter()
+            .any(|m| m.contains("cannot use a wildcard")),
+        "{wildcard_net:?}"
+    );
+}
+

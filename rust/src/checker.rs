@@ -15,6 +15,199 @@ const CHECKED_KINDS: &[&str] = &[
     "stack", "scroll", "grid", "spacer",
 ];
 
+const SCOPED_CAPS: &[&str] = &["network", "native"];
+const UNSCOPED_CAPS: &[&str] = &[
+    "storage",
+    "camera",
+    "microphone",
+    "location",
+    "clipboard",
+    "notifications",
+    "gpu-compute",
+];
+const ALL_CAPS: &[&str] = &[
+    "camera",
+    "clipboard",
+    "gpu-compute",
+    "location",
+    "microphone",
+    "native",
+    "network",
+    "notifications",
+    "storage",
+];
+
+fn clean_host_hint(tgt: &str) -> String {
+    let with_scheme = if tgt.contains("://") {
+        tgt.to_string()
+    } else {
+        format!("https://{tgt}")
+    };
+    let after = with_scheme.split_once("://").map_or("", |(_, r)| r);
+    let end = after.find(&['/', '?', '#'][..]).unwrap_or(after.len());
+    let host = &after[..end];
+    if host.is_empty() {
+        "api.example.com".to_string()
+    } else {
+        host.to_string()
+    }
+}
+
+fn literal_resource_http_url(src: &str) -> Option<&str> {
+    let s = src.trim();
+    let s = s.strip_prefix("live ").map_or(s, |r| r.trim());
+    let inner = s.strip_prefix('"')?.strip_suffix('"')?;
+    if (inner.starts_with("http://") || inner.starts_with("https://"))
+        && !inner.contains('{')
+        && !inner.contains('"')
+    {
+        Some(inner)
+    } else {
+        None
+    }
+}
+
+fn literal_request_http_url(src: &str) -> Option<&str> {
+    let s = src.trim();
+    let rest = s
+        .strip_prefix("post ")
+        .or_else(|| s.strip_prefix("fetch "))?
+        .trim_start();
+    let after_open = rest.strip_prefix('"')?;
+    let close = after_open.find('"')?;
+    let url = &after_open[..close];
+    let tail = &after_open[close + 1..];
+    if !tail.is_empty() && !tail.starts_with(char::is_whitespace) {
+        return None;
+    }
+    if (url.starts_with("http://") || url.starts_with("https://")) && !url.contains('{') {
+        Some(url)
+    } else {
+        None
+    }
+}
+
+fn check_capabilities(program: &Program, errors: &mut Vec<PlainError>) {
+    for cap in &program.capabilities {
+        if cap.kind.is_empty() || cap.kind == "needs:" {
+            errors.push(
+                PlainError::new("`needs` must name at least one capability.")
+                    .at(cap.line_no, cap.raw.clone())
+                    .hint("needs network api.example.com"),
+            );
+            continue;
+        }
+        let raw_kind = cap.kind.trim_end_matches(':');
+        if !ALL_CAPS.contains(&raw_kind) || cap.kind.ends_with(':') {
+            let hint = match closest(raw_kind, ALL_CAPS, 0.6) {
+                Some(s) => format!("did you mean `needs {s}`?"),
+                None => "capabilities include `network <host>`, `storage`, `camera`, `clipboard`, `notifications`".to_string(),
+            };
+            errors.push(
+                PlainError::new(format!("`{}` isn't a capability PL knows.", cap.kind))
+                    .at(cap.line_no, cap.raw.clone())
+                    .hint(hint),
+            );
+            continue;
+        }
+        if SCOPED_CAPS.contains(&cap.kind.as_str()) {
+            let Some(raw_tgt) = &cap.target else {
+                let (what, example) = if cap.kind == "network" {
+                    (
+                        "the host it talks to (no blanket internet access)",
+                        "needs network api.example.com",
+                    )
+                } else {
+                    ("the library it loads", "needs native sqlite")
+                };
+                errors.push(
+                    PlainError::new(format!("`needs {}` must name {what}.", cap.kind))
+                        .at(cap.line_no, cap.raw.clone())
+                        .hint(example),
+                );
+                continue;
+            };
+            if cap.kind == "network" {
+                let tgt = raw_tgt.trim();
+                if tgt.contains("://") || tgt.contains('/') {
+                    let clean_host = clean_host_hint(tgt);
+                    errors.push(
+                        PlainError::new(format!(
+                            "`needs network` takes a host name, not a full URL (`{tgt}`)."
+                        ))
+                        .at(cap.line_no, cap.raw.clone())
+                        .hint(format!("needs network {clean_host}")),
+                    );
+                } else if tgt.contains('*') {
+                    errors.push(
+                        PlainError::new(format!(
+                            "`needs network` cannot use a wildcard (`{tgt}`) — name each host explicitly."
+                        ))
+                        .at(cap.line_no, cap.raw.clone())
+                        .hint("needs network api.example.com"),
+                    );
+                } else if tgt.chars().any(char::is_whitespace) {
+                    errors.push(
+                        PlainError::new("Separate multiple capabilities with a comma in `needs`.")
+                            .at(cap.line_no, cap.raw.clone())
+                            .hint("needs network api.example.com, storage"),
+                    );
+                }
+            }
+        } else if UNSCOPED_CAPS.contains(&cap.kind.as_str()) {
+            if let Some(extra) = &cap.target {
+                errors.push(
+                    PlainError::new(format!(
+                        "`needs {}` doesn't take `{extra}` after it.",
+                        cap.kind
+                    ))
+                    .at(cap.line_no, cap.raw.clone())
+                    .hint(format!("needs {}", cap.kind)),
+                );
+            }
+        }
+    }
+}
+
+fn check_url_capability(
+    url: &str,
+    line_no: usize,
+    line_text: Option<&str>,
+    program: &Program,
+    errors: &mut Vec<PlainError>,
+) {
+    let (allowed, host) = program.allows_network_url(url);
+    if allowed {
+        return;
+    }
+    let suggest_host = if host.contains(':') && !host.starts_with("scheme") {
+        host.split(':').next().unwrap_or(&host)
+    } else {
+        host.as_str()
+    };
+    let mut err = PlainError::new(format!(
+        "This line connects to `{host}`, which isn't listed in `needs`."
+    ))
+    .hint(format!("add `needs network {suggest_host}` at the top of this file"));
+    err.line_no = Some(line_no);
+    if let Some(txt) = line_text {
+        err.line_text = Some(txt.to_string());
+    }
+    errors.push(err);
+}
+
+fn check_request_text_capability(
+    text: &str,
+    line_no: usize,
+    line_text: Option<&str>,
+    program: &Program,
+    errors: &mut Vec<PlainError>,
+) {
+    if let Some(url) = literal_request_http_url(text) {
+        check_url_capability(url, line_no, line_text, program, errors);
+    }
+}
+
 fn is_known_prop(w: &str) -> bool {
     VALUE_PROPS_1.contains(&w)
         || VALUE_PROPS_EXPR.contains(&w)
@@ -62,6 +255,29 @@ fn closest(word: &str, candidates: &[&str], cutoff: f64) -> Option<String> {
 
 pub fn check_program(program: &Program) -> Vec<PlainError> {
     let mut errors = Vec::new();
+    check_capabilities(program, &mut errors);
+
+    for stmt in &program.shared_decls {
+        match stmt {
+            Stmt::Resource {
+                source, line_no, ..
+            } => {
+                if let Some(url) = literal_resource_http_url(source) {
+                    check_url_capability(url, *line_no, None, program, &mut errors);
+                }
+            }
+            Stmt::Keep { name, line_no } if !program.has_capability("storage") => {
+                let mut err = PlainError::new(format!(
+                    "`keep {name}` saves data on this device, so this file must declare `needs storage`."
+                ))
+                .hint("add `needs storage` at the top of this file");
+                err.line_no = Some(*line_no);
+                errors.push(err);
+            }
+            _ => {}
+        }
+    }
+
     for page in &program.pages {
         if page.path.is_none() && page.params.is_empty() {
             errors.push(
@@ -104,31 +320,68 @@ pub fn check_program(program: &Program) -> Vec<PlainError> {
                     }
                     seen.insert(name.clone(), *line_no);
                 }
+                Stmt::Keep { name, line_no } if !program.has_capability("storage") => {
+                    let mut err = PlainError::new(format!(
+                        "`keep {name}` saves data on this device, so this file must declare `needs storage`."
+                    ))
+                    .hint("add `needs storage` at the top of this file");
+                    err.line_no = Some(*line_no);
+                    errors.push(err);
+                }
+                Stmt::Resource {
+                    source, line_no, ..
+                } => {
+                    if let Some(url) = literal_resource_http_url(source) {
+                        check_url_capability(url, *line_no, None, program, &mut errors);
+                    }
+                }
                 Stmt::Action { name, .. } => actions.push(name.as_str()),
                 _ => {}
             }
         }
-        check_block(body, program, &mut errors, &actions);
+        check_block(body, program, &mut errors, true, &actions);
+        for stmt in body {
+            if let Stmt::Action {
+                body: action_body, ..
+            } = stmt
+            {
+                check_block(action_body, program, &mut errors, false, &actions);
+            }
+        }
     }
     errors
 }
 
-fn check_block(stmts: &[Stmt], program: &Program, errors: &mut Vec<PlainError>, actions: &[&str]) {
+fn check_block(
+    stmts: &[Stmt],
+    program: &Program,
+    errors: &mut Vec<PlainError>,
+    visual: bool,
+    actions: &[&str],
+) {
     for stmt in stmts {
         match stmt {
             Stmt::Node(n) => check_node(n, program, errors, actions),
+            Stmt::Assign { expr, line_no, .. } => {
+                check_request_text_capability(expr, *line_no, None, program, errors);
+            }
             Stmt::If {
                 then_body,
                 else_body,
+                line_no,
+                inline_then,
                 ..
             } => {
-                check_block(then_body, program, errors, actions);
-                check_block(else_body, program, errors, actions);
+                if let Some(inl) = inline_then {
+                    check_request_text_capability(inl, *line_no, None, program, errors);
+                }
+                check_block(then_body, program, errors, visual, actions);
+                check_block(else_body, program, errors, visual, actions);
             }
-            Stmt::For { body, .. } => check_block(body, program, errors, actions),
+            Stmt::For { body, .. } => check_block(body, program, errors, visual, actions),
             Stmt::When { branches, .. } => {
                 for b in branches {
-                    check_block(&b.body, program, errors, actions);
+                    check_block(&b.body, program, errors, visual, actions);
                 }
             }
             Stmt::Raw {
@@ -136,21 +389,51 @@ fn check_block(stmts: &[Stmt], program: &Program, errors: &mut Vec<PlainError>, 
                 line_no,
                 children,
             } => {
-                check_block(children, program, errors, actions);
-                let head = text
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .trim_end_matches(':');
-                if !matches!(head, "go" | "return" | "transition" | "refresh") {
-                    if let Some(sug) = closest(head, NODE_KINDS, 0.65) {
-                        errors.push(
-                            PlainError::new(format!(
-                                "`{head}` isn't a thing PL knows how to draw."
-                            ))
-                            .at(*line_no, text.clone())
-                            .hint(format!("did you mean `{sug}`?")),
-                        );
+                check_request_text_capability(text, *line_no, Some(text.as_str()), program, errors);
+                check_block(children, program, errors, visual, actions);
+                let words: Vec<&str> = text.split_whitespace().collect();
+                let head = words.first().copied().unwrap_or("").trim_end_matches(':');
+                if visual {
+                    if !matches!(head, "go" | "return" | "transition" | "refresh") {
+                        if let Some(sug) = closest(head, NODE_KINDS, 0.65) {
+                            errors.push(
+                                PlainError::new(format!(
+                                    "`{head}` isn't a thing PL knows how to draw."
+                                ))
+                                .at(*line_no, text.clone())
+                                .hint(format!("did you mean `{sug}`?")),
+                            );
+                        }
+                    }
+                } else {
+                    let allowed = matches!(
+                        head,
+                        "go" | "return"
+                            | "transition"
+                            | "refresh"
+                            | "show"
+                            | "post"
+                            | "fetch"
+                            | "then"
+                            | "together"
+                            | "wait"
+                    );
+                    let is_list_op = words.len() > 1 && matches!(words[1], "add" | "remove");
+                    if !head.is_empty()
+                        && !allowed
+                        && !is_list_op
+                        && !head.starts_with("add")
+                        && !head.starts_with("remove")
+                    {
+                        if let Some(sug) = closest(head, NODE_KINDS, 0.65) {
+                            errors.push(
+                                PlainError::new(format!(
+                                    "`{head}` isn't a thing PL knows how to draw."
+                                ))
+                                .at(*line_no, text.clone())
+                                .hint(format!("did you mean `{sug}`?")),
+                            );
+                        }
                     }
                 }
             }
@@ -176,6 +459,15 @@ fn check_node(node: &Node, program: &Program, errors: &mut Vec<PlainError>, acti
                 e.line_no = Some(node.line_no);
                 errors.push(e);
             }
+        }
+        if let Some(inline_src) = &ev.inline {
+            let rhs = inline_src
+                .split_once('=')
+                .map_or(inline_src.as_str(), |(_, r)| r.trim());
+            check_request_text_capability(rhs, node.line_no, None, program, errors);
+        }
+        if !ev.block.is_empty() {
+            check_block(&ev.block, program, errors, false, actions);
         }
     }
     for p in &node.props {

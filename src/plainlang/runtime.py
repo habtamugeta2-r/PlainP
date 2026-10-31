@@ -15,6 +15,7 @@ import json
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -96,17 +97,6 @@ def _provider_lookup(source: str, providers: dict):
     return None
 
 
-def _resource_match(decl: ResourceDecl, providers: dict):
-    """Resolve a sidecar resource; unmatched resources are an honest failure."""
-    val = _provider_lookup(decl.source.strip().strip('"'), providers)
-    if val is None:
-        return ("failed",
-                "no data source is connected in this prototype yet")
-    if isinstance(val, dict) and val.get("_failed"):
-        return ("failed", str(val["_failed"]))
-    return ("ready", val)
-
-
 class Scope:
     """Bindings for one page/component instance."""
 
@@ -130,6 +120,9 @@ class Runtime:
         self.program = program
         self.scopes: dict[str, Scope] = {}
         self.shared: dict = {}
+        self.shared_resources: dict[str, ResourceDecl] = {}
+        self._shared_scope = Scope(None)
+        self._shared_scope.path = "shared"
         self._shared_ready = False
         self.providers = providers or {}
         self.persist_path = Path(persist_path) if persist_path else None
@@ -139,12 +132,19 @@ class Runtime:
         self.resource_cache: dict[str, tuple] = {}
         self.resource_meta: dict[str, dict] = {}
 
-    # -- persistence (`keep`) ---------------------------------------------
+    # -- persistence (`keep`, requires `needs storage`) --------------------
+    def _storage_allowed(self) -> bool:
+        has_cap = getattr(self.program, "has_capability", None)
+        if callable(has_cap):
+            return bool(has_cap("storage"))
+        return "storage" in getattr(self.program, "needs", [])
+
     @property
     def store(self) -> dict:
         if self._store is None:
             self._store = {}
-            if self.persist_path and self.persist_path.exists():
+            if (self.persist_path and self._storage_allowed()
+                    and self.persist_path.exists()):
                 try:
                     self._store = json.loads(
                         self.persist_path.read_text(encoding="utf-8"))
@@ -153,12 +153,16 @@ class Runtime:
         return self._store
 
     def save_kept(self):
-        if not self.persist_path:
+        if not self.persist_path or not self._storage_allowed():
             return
+        wrote = False
         for sc in self.scopes.values():
             for name in sc.keeps:
                 if name in sc.state:
                     self.store.setdefault(sc.path, {})[name] = sc.state[name]
+                    wrote = True
+        if not wrote:
+            return
         self.persist_path.parent.mkdir(parents=True, exist_ok=True)
         self.persist_path.write_text(
             json.dumps(self.store, ensure_ascii=False, indent=1, default=str),
@@ -207,7 +211,8 @@ class Runtime:
                 sc.resources[stmt.name] = stmt
             elif isinstance(stmt, KeepDecl):
                 sc.keeps.add(stmt.name)
-        if not preserve and self.persist_path:
+        if (not preserve and self.persist_path and sc.keeps
+                and self._storage_allowed()):
             saved = self.store.get(sc.path, {})
             for name in sc.keeps:
                 if name in saved:
@@ -227,12 +232,16 @@ class Runtime:
                 self.shared[stmt.name] = evaluate_text(
                     stmt.expr, dict(self.shared), self.program.kinds, stmt.line_no)
             elif isinstance(stmt, ResourceDecl):
-                self.shared[stmt.name] = _resource_match(stmt, self.providers)
+                self.shared_resources[stmt.name] = stmt
 
     def env_for(self, sc: Scope, extra: dict | None = None,
                 resources: bool = True) -> dict:
         """Read-view: shared + state + derived (recomputed) + locals."""
         env = dict(self.shared)
+        if resources:
+            for name, decl in self.shared_resources.items():
+                if name not in sc.resources and name not in sc.state:
+                    env[name] = self._resource_value(self._shared_scope, decl, None)
         env.update(sc.state)
         if resources:
             for name, decl in sc.resources.items():
@@ -378,7 +387,7 @@ class Runtime:
             conditional = {"If-None-Match": etag} if etag else None
             tag, value = _http_request("GET", address, None, "empty",
                                        decl.line_no, extra_headers=conditional,
-                                       meta=out)
+                                       meta=out, program=self.program)
             if tag == "not_modified":
                 if cached is not None:
                     return cached, out.get("etag") or etag
@@ -393,12 +402,16 @@ class Runtime:
     def refresh(self, sc: Scope, name: str, extra=None, line_no=None):
         """`refresh messages` — drop the cached value and fetch once."""
         decl = sc.resources.get(name)
+        owner_sc = sc
+        if decl is None and name in self.shared_resources:
+            decl = self.shared_resources[name]
+            owner_sc = self._shared_scope
         if decl is None:
             raise PlainError(
                 f"There's no resource called `{name}` to refresh.",
                 line_no=line_no,
                 hint=f"resources are declared as `{name} from \"/path\"`")
-        return self._resource_value(sc, decl, extra, force=True)
+        return self._resource_value(owner_sc, decl, extra, force=True)
 
     def exec_text(self, sc: Scope, text: str, extra, line_no):
         """Execute an inline one-liner like `count += 1` / `add-task`."""
@@ -486,7 +499,8 @@ class Runtime:
         if fixture is not None:
             result = fixture
         elif url.startswith(("http://", "https://")):
-            result = _http_request(method_upper, url, body, body_kind, line_no)
+            result = _http_request(method_upper, url, body, body_kind, line_no,
+                                   program=self.program)
         else:
             result = ("failed", f"offline: no transport for {url} "
                                 f"in this prototype yet")
@@ -704,10 +718,37 @@ def _retryable_status(code: int) -> bool:
     return code in (408, 425, 429) or 500 <= code <= 599
 
 
+class _NetworkCapabilityDenied(Exception):
+    """Raised when an HTTP request or redirect targets an undeclared host."""
+
+    def __init__(self, host: str):
+        super().__init__(host)
+        self.host = host
+
+
+class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Checks every redirect hop against `needs network <host>` (HAB-70)."""
+
+    def __init__(self, program):
+        super().__init__()
+        self.program = program
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        resolved = urllib.parse.urljoin(req.full_url, newurl)
+        if self.program is not None:
+            allows = getattr(self.program, "allows_network_url", None)
+            if callable(allows):
+                allowed, host = allows(resolved)
+                if not allowed:
+                    raise _NetworkCapabilityDenied(host)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _http_request(method: str, url: str, body, body_kind: str,
                   line_no=None, retries: bool | None = None,
                   extra_headers: dict | None = None,
-                  meta: dict | None = None):
+                  meta: dict | None = None,
+                  program=None):
     """One HTTP exchange. Safe methods retry transient failures.
 
     `GET`/`HEAD` are idempotent, so they get bounded exponential backoff
@@ -716,8 +757,15 @@ def _http_request(method: str, url: str, body, body_kind: str,
 
     `extra_headers` lets a resource send `If-None-Match`; `meta` receives
     response metadata (`etag`, `not_modified`) without changing the public
-    Result tuple.
+    Result tuple. `program` enforces default-deny `needs network <host>` on
+    both the initial URL and any redirect target.
     """
+    if program is not None:
+        allows = getattr(program, "allows_network_url", None)
+        if callable(allows):
+            allowed, host = allows(url)
+            if not allowed:
+                return ("failed", f"denied: needs network {host}")
     if retries is None:
         retries = method in ("GET", "HEAD")
     data = None
@@ -734,10 +782,11 @@ def _http_request(method: str, url: str, body, body_kind: str,
             headers["Content-Type"] = "text/plain; charset=utf-8"
     req = urllib.request.Request(url, data=data, headers=headers,
                                  method=method)
+    opener = urllib.request.build_opener(_GuardedRedirectHandler(program))
     attempts = _HTTP_ATTEMPTS if retries else 1
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with opener.open(req, timeout=10) as resp:
                 raw = resp.read()
                 if meta is not None:
                     meta["etag"] = resp.headers.get("ETag")
@@ -745,6 +794,8 @@ def _http_request(method: str, url: str, body, body_kind: str,
                 if "json" in ctype:
                     return ("ok", json.loads(raw.decode("utf-8")))
                 return ("ok", raw.decode("utf-8"))
+        except _NetworkCapabilityDenied as e:
+            return ("failed", f"denied: needs network {e.host}")
         except urllib.error.HTTPError as e:
             if e.code == 304 and meta is not None and extra_headers:
                 e.close()

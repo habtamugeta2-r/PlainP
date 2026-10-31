@@ -280,6 +280,39 @@ enum Classified {
     OtherwiseBody(Vec<Stmt>),
 }
 
+fn parse_capabilities(rest: Option<&str>, line_no: usize, raw_line: &str) -> Vec<Capability> {
+    let raw = rest.unwrap_or("").trim();
+    if raw.is_empty() {
+        return vec![Capability {
+            kind: String::new(),
+            target: None,
+            line_no,
+            raw: raw_line.to_string(),
+        }];
+    }
+    let mut out = Vec::new();
+    for part in raw.split(',') {
+        let clause = part.trim();
+        if clause.is_empty() || clause == "nothing" {
+            continue;
+        }
+        let words: Vec<&str> = clause.split_whitespace().collect();
+        let kind = words[0].to_string();
+        let target = if words.len() > 1 {
+            Some(words[1..].join(" "))
+        } else {
+            None
+        };
+        out.push(Capability {
+            kind,
+            target,
+            line_no,
+            raw: raw_line.to_string(),
+        });
+    }
+    out
+}
+
 pub fn parse_program(source: &str) -> Result<Program, PlainError> {
     let roots = block_tree(source)?;
     let mut sigs: HashMap<String, Vec<String>> = HashMap::new();
@@ -292,12 +325,15 @@ pub fn parse_program(source: &str) -> Result<Program, PlainError> {
     let mut prog = Program::default();
     for ln in &roots {
         let t = &ln.text;
-        if let Some(rest) = t.strip_prefix("needs ") {
-            prog.needs.extend(
-                rest.replace(',', " ")
-                    .split_whitespace()
-                    .map(|w| w.to_string()),
-            );
+        if t == "needs" || t.starts_with("needs ") {
+            let rest = t.strip_prefix("needs ");
+            let caps = parse_capabilities(rest, ln.no, t);
+            for cap in &caps {
+                if !cap.kind.is_empty() {
+                    prog.needs.push(cap.label());
+                }
+            }
+            prog.capabilities.extend(caps);
         } else if let Some(name) = kind_header(t) {
             let fields = ln
                 .children

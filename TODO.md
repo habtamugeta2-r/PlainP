@@ -13,9 +13,9 @@
 |---|---|---|
 | **Blueprint & Spec (`docs/00`–`07`)** | 8 architectural & spec docs + [`docs/README.md`](docs/README.md) index | — |
 | **Normative Corpus (`examples/`)** | All **9** `.plain` apps parse, check, format canonically, and render deterministic SVG + derived a11y | `./plain validate` & `./plain fmt --check examples/*.plain` |
-| **Python Spec-Oracle (`src/plainlang/`)** | 17 stdlib-only modules (~5.0k LOC), 8 CLI subcommands, zero runtime dependencies (`pyproject.toml`) | `make ci` |
-| **Rust Engine (`rust/`)** | `plain-rs` Slices 1–2 (`tokens`, `ast`, `parser`, `checker`, 15 tests); needs M0 catch-up before Slice 3 | GitHub Actions `engine-rust` job |
-| **Completed Milestones** | **M0** (`HAB-73`: PR #1, #2) + **M1 Tranches 1–2** (`HAB-74`: PR #3) + **DX/Linear Reorganization** (`HAB-75`) | All CI gates green |
+| **Python Spec-Oracle (`src/plainlang/`)** | 17 stdlib-only modules (~5.3k LOC), 8 CLI subcommands, 102 tests, zero runtime dependencies (`pyproject.toml`) | `make ci` |
+| **Rust Engine (`rust/`)** | `plain-rs` Slices 1–2 (`tokens`, `ast`, `parser`, `checker`, 17 tests incl. structured `needs` & action-body walk) | GitHub Actions `engine-rust` job |
+| **Completed Milestones** | **M0** (`HAB-73`) + **M1 Tranches 1–2** (`HAB-74`) + **DX/Linear Reorganization** (`HAB-75`) + **Wave 1A Security** (`HAB-69`, `HAB-70`) | All CI gates green |
 
 ---
 
@@ -23,17 +23,11 @@
 
 Ordered by severity and dependency chain. Every item maps 1:1 to an open Linear issue in **PlainP — PLAIN Platform & PL**.
 
-### Wave 1A · Security & Capability Boundaries
-- [ ] **`HAB-69` · [P1 Urgent] Harden preview mutations and protect `secret` inputs** (`SEC-07`, `SRV-04`, `SRV-05`, `SRV-12`)
-  - Move `/tap/*`, `/field/*`, and `/reset` off `GET` onto `POST` so `secret` input values never appear in query strings, browser history, or HTTP logs (`src/plainlang/server.py:121–127, 196–248`).
-  - Add `Content-Length` cap (`64 KiB`), `Origin`/CSRF token verification on state-mutating endpoints, and `Cache-Control: no-store` + `X-Content-Type-Options: nosniff` while keeping `0.0.0.0` proxy embedding intact.
-- [ ] **`HAB-70` · [P2 High] Define and enforce `needs network` capability boundaries** (`SEC-01`, `SEC-02`, `NET-01`, `CHK-08`)
-  - Parse `needs` declarations into structured capability specs instead of raw strings (`parser.py:210`).
-  - Enforce default-deny host allowlists and cross-host redirect checks in `runtime.py:_default_transport` (`runtime.py:424, 516`), returning `("failed", "denied")` when undeclared.
-
-### Wave 1B · Python–Rust Lockstep Gate
+### Wave 1B · Architectural Separation (`ADR-9`) & Python–Rust Lockstep Gate
+- [ ] **Architecture Track (`ADR-9`) · Separate PL Core language fundamentals from Clear atoms (~8 primitives) and `std/ui.plain` prelude** (`docs/05` ADR-9)
+  - Decouple parser/checker from hardcoded widget lists via two-phase signature resolution, promote two-way `bind` references + typed boolean flags to PL Core, expose interaction/semantic a11y traits on `box`/`text-input`, and author controls (`button`, `toggle`, `divider`, `spacer`, `spinner`, `table`) in `std/ui.plain` shared by Python & Rust.
 - [ ] **`HAB-76` · [P2 High] Bring Rust front-end (`plain-rs` Slice 1–2) up to M0 parity with Python oracle** (`RS-08`, `P0-02/03/08/09`)
-  - Add 1-based column spans & carets (`tokens.rs`, `ast.rs`, `errors.rs`), preserve component/page parameter `defaults` (`parser.rs:146`), traverse `Stmt::Action` bodies (`checker.rs:111`), and emit `PlainWarning` notes.
+  - Add 1-based column spans & carets (`tokens.rs`, `ast.rs`, `errors.rs`), preserve component/page parameter `defaults` (`parser.rs:146`), and emit `PlainWarning` notes (action-body walk & capability checks landed in `HAB-70`).
 - [ ] **`HAB-71` · [P2 High] Establish Python–Rust differential parity harness** (`RS-09`, `TST-11`) *(blocked by `HAB-76`)*
   - Add `--dump-ast --json` and `--json` diagnostics to both Python `plain` and Rust `plain-rs`, plus a CI gate diffing ASTs, warnings, and errors across `examples/*.plain` and negative fixtures.
 
@@ -63,6 +57,9 @@ Ordered by severity and dependency chain. Every item maps 1:1 to an open Linear 
 
 ## 4. Recently Completed Milestones (`Done`)
 
+- [x] **`HAB-69` & `HAB-70` · Wave 1A Preview Server Hardening & Default-Deny Capability Boundaries** *(2026-10-31)*
+  - Moved `/tap/*`, `/field/*`, and `/reset` to `POST` (`405` on `GET`), enforced per-session CSRF + `Origin`/`Sec-Fetch-Site` checks, capped `POST` bodies at 64 KiB (`413`), added proxy-compatible security headers, and eliminated `secret` input plaintext from URLs, HTML `value`, SVG, `a11y`, and Looking Glass (`HAB-69`).
+  - Added structured `Capability` AST + comma-separated `needs` parsing in Python & Rust, `plain check` diagnostics (`keep` requires `needs storage`, literal `http(s)://` requires `needs network <host>`, no wildcards/blanket `needs network`), and runtime default-deny host + redirect hop checks (`HAB-70`).
 - [x] **`HAB-75` · Repository Audit, TODO Split, Packaging & Linear Documentation Hub** *(2026-10-31)*
   - Audited all 17 Python modules, 7 Rust modules, 9 examples, and 7 blueprint docs; created Linear handbook, labels, dependency graph, and issues `HAB-69`..`HAB-84`; split 1,392-line `TODO.md` into `TODO.md` + `docs/07-workstream-backlog.md`; added `pyproject.toml`, `docs/README.md`, `CONTRIBUTING.md`, and fixed `examples/README.md` + duplicate `parser.py` branch.
 - [x] **`HAB-74` · M1 Tranches 1–2: Request Actions, `when`/`then`, Toasts, LRU Resource Cache, ETag & Safe-GET Retries** *(PR #3, 2026-10-31)*

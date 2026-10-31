@@ -695,8 +695,8 @@ signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
 - [ ] **SRV-04 · Input fidelity** — `P1 · M`. `change` vs `submit` vs
       blur, password/email types, IME, autocomplete, focus retention;
       no GET form that submits on every keystroke path.
-- [ ] **SRV-05 · `/sync` correctness** — `P1 · S`. Current viewport, race
-      handling, 204/4xx semantics, CSRF/origin check for the preview.
+- [x] **SRV-05 · `/sync` correctness** — `P1 · S`. Current viewport, race
+      handling, 204/4xx semantics, CSRF/origin check for the preview (`HAB-69`).
 - [x] **SRV-06 · Error page with carets** — `P1 · S`. Use P0-09 spans;
       keep "your program is fine" for `UnsupportedYet`; never a stack
       trace in the page.
@@ -710,11 +710,11 @@ signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
       every `from` resource (NET-11).
 - [ ] **SRV-11 · Device presets & QR** — `P2 · M`. Keep 4 sizes; add
       `plain run --on phone` with QR and LAN address.
-- [ ] **SRV-12 · Security headers** — `P1 · S`. CSP, frame-ancestors
+- [x] **SRV-12 · Security headers** — `P1 · S`. CSP, frame-ancestors
       (must still allow the Arena preview proxy), no MIME sniffing,
-      no state mutation from foreign origins.
-- [ ] **SRV-13 · Server tests** — `P1 · M`. Integration tests for GET,
-      tap, field, reset, sync, errors, two concurrent clients.
+      no state mutation from foreign origins (`HAB-69`).
+- [x] **SRV-13 · Server tests** — `P1 · M`. Integration tests for GET,
+      tap, field, reset, sync, errors, two concurrent clients (`HAB-69`).
 - [ ] **SRV-14 · Golden screenshots** — `P2 · M`. 9 examples × 4 sizes,
       compared on CI with a tolerance for font differences.
 
@@ -776,9 +776,10 @@ signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
 - [ ] **CHK-07 · Duplicates & collisions** — `P1 · S`. Duplicate kinds,
       components, pages, looks, shared names; duplicate page routes;
       component names colliding with built-in node kinds.
-- [ ] **CHK-08 · Capability coverage** — `P1 · S`. `from "https://…"`
-      without `needs network host`; a module's needs union; warn before
-      run, never at first fetch.
+- [x] **CHK-08 · Capability coverage** — `P1 · S`. `from "https://…"` and
+      literal `fetch`/`post` without `needs network host`, plus `keep`
+      without `needs storage`, diagnosed before run in Python & Rust (`HAB-70`;
+      module `needs` union lands with `use` in `HAB-80`).
 - [ ] **CHK-09 · Warnings vs errors** — ◐ *(`PlainWarning` channel shipped in M0 `P0-03`; warning codes & `--strict` flag remain)* · `P1 · M`. A warning channel with
       codes; valid-but-unimplemented syntax warns; unknown syntax errors.
       `--strict` promotes warnings.
@@ -799,13 +800,13 @@ signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
 
 ## 14. Security & capabilities (`HAB-69`, `HAB-70`)
 
-- [ ] **SEC-01 · Parse `needs` properly** — `P1 · M`. Structured
+- [x] **SEC-01 · Parse `needs` properly** — `P1 · M`. Structured
       capabilities (`network api.example.com`, `storage`, `camera`,
       `clipboard`, `notifications`, `gpu-compute`, `native lib`), not a
-      word list; display verbatim before first run.
-- [ ] **SEC-02 · Enforcement** — `P1 · L`. Default deny. No network/fs
-      call without a handle; deny produces `failed denied` a program can
-      match, plus a plain UI explanation.
+      word list; validated in Python & Rust (`HAB-70`).
+- [x] **SEC-02 · Enforcement** — `P1 · L`. Default deny on `http(s)://`
+      requests, cross-host redirects, and `keep` disk persistence; deny
+      produces `failed "denied: needs network <host>"` a program can match (`HAB-70`).
 - [ ] **SEC-03 · Unforgeable handles** — `P1 · L`. Capabilities are values
       injected by the runtime; stdlib signatures require the handle, so
       ambient authority is unrepresentable (ADR-7).
@@ -817,8 +818,9 @@ signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
 - [ ] **SEC-06 · Injection audit** — `P1 · S`. Every sink traced: SVG
       text escapes, HTML preview escapes, state dump escapes, no
       string-built UI, no `innerHTML`-equivalent anywhere.
-- [ ] **SEC-07 · Preview hardening** — `P1 · S`. Origin/CSRF on `/sync`,
-      headers, no arbitrary file reads, secrets redacted (P0-04).
+- [x] **SEC-07 · Preview hardening** — `P1 · S`. POST-only mutations,
+      Origin/CSRF on `/tap`/`/field`/`/sync`/`/reset`, 64 KiB cap, security
+      headers, no arbitrary file reads, secrets redacted across HTML/SVG/a11y/Looking Glass (`P0-04`, `HAB-69`).
 - [ ] **SEC-08 · Content trust** — `P2 · L`. Signed programs/modules,
       hash pinning, TOFU made visible, no install scripts.
 - [ ] **SEC-09 · Crypto stdlib** — `P3 · M`. Hashes, signatures, secure

@@ -75,7 +75,7 @@ PLAIN
 ├── rust/ ............................. Production engine port (ADR-1):
 │                                        slices 1–2 (tokens/parser/checker)
 │                                        green in CI — status: Doc 06 §8
-├── tests/ ............................ 94 spec-oracle tests (`make test`)
+├── tests/ ............................ 102 spec-oracle tests (`make test`)
 │                                        + Rust parity tests in rust/tests/
 ├── pyproject.toml .................... Zero-dependency Python package metadata
 └── plain ............................. The CLI: `./plain run|check|render|a11y|fmt|validate`
@@ -88,7 +88,7 @@ PLAIN
 ./plain run examples/01-counter.plain           # → http://localhost:8000
 ./plain render examples/00-hello-world.plain --out hello.svg
 ./plain a11y examples/01-counter.plain          # a11y tree, derived free
-make test                                       # 94 tests
+make test                                       # 102 tests
 ```
 
 No install, no dependencies, no build step (Doc 03 §10 honored by the

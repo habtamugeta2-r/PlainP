@@ -487,48 +487,203 @@ class TestP010PreviewSessions(unittest.TestCase):
         self.thread.join(timeout=2)
         self.temp.cleanup()
 
-    def request(self, method, path, body=None, cookie=None):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.plain = Path(self.temp.name) / "app.plain"
+        self.plain.write_text(
+            'page Home at "/":\n'
+            '  name = ""\n'
+            '  secret_pw = ""\n'
+            '  clicks = 0\n'
+            '  column:\n'
+            '    input bind name\n'
+            '    input bind secret_pw secret\n'
+            '    button "Bump" on tap: clicks += 1\n'
+            '    text "{name}:{clicks}"\n', encoding="utf-8")
+        self.server = ThreadingHTTPServer(
+            ("127.0.0.1", 0), make_handler(self.plain, 800, 600))
+        self.thread = threading.Thread(target=self.server.serve_forever,
+                                       daemon=True)
+        self.thread.start()
+        self.port = self.server.server_address[1]
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        self.temp.cleanup()
+
+    def request(self, method, path, body=None, cookie=None, extra_headers=None):
         conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
         headers = {}
         if cookie:
             headers["Cookie"] = cookie
         if body is not None:
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+        if extra_headers:
+            headers.update(extra_headers)
         conn.request(method, path, body=body, headers=headers)
         resp = conn.getresponse()
         data = resp.read()
-        out = (resp.status, resp.getheader("Set-Cookie"), data)
+        out = (resp.status, resp.getheader("Set-Cookie"), data, dict(resp.getheaders()))
         conn.close()
         return out
 
+    @staticmethod
+    def _csrf(page_bytes: bytes) -> str:
+        return re.search(rb'name="plain-csrf" content="([^"]+)"',
+                         page_bytes).group(1).decode()
+
     def test_each_client_gets_its_own_session(self):
-        status_a, cookie_a, page = self.request("GET", "/")
-        status_b, cookie_b, _ = self.request("GET", "/")
+        status_a, cookie_a, page, hdrs_a = self.request("GET", "/")
+        status_b, cookie_b, _, _ = self.request("GET", "/")
         self.assertEqual((status_a, status_b), (200, 200))
         self.assertIn("plainsid=", cookie_a)
         self.assertIn("plainsid=", cookie_b)
         self.assertNotEqual(cookie_a, cookie_b)
+        self.assertEqual(hdrs_a.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(hdrs_a.get("Referrer-Policy"), "no-referrer")
 
+        sid_a = cookie_a.split(";")[0]
+        csrf_a = self._csrf(page)
         path = re.search(rb'data-path="([^"]+)"', page).group(1).decode()
-        sc, _, _ = self.request(
+        sc, _, _, _ = self.request(
             "POST", "/sync?size=desktop",
-            body=f"f_{path}=hello".encode(),
-            cookie=cookie_a.split(";")[0])
+            body=f"_csrf={csrf_a}&f_{path}=hello".encode(),
+            cookie=sid_a)
         self.assertEqual(sc, 204)
-        _, _, svg_a = self.request("GET", "/app.svg",
-                                   cookie=cookie_a.split(";")[0])
-        _, _, svg_b = self.request("GET", "/app.svg",
-                                   cookie=cookie_b.split(";")[0])
-        self.assertIn(b"hello", svg_a)
-        self.assertNotIn(b"hello", svg_b)
+        _, _, svg_a, _ = self.request("GET", "/app.svg", cookie=sid_a)
+        _, _, svg_b, _ = self.request("GET", "/app.svg",
+                                      cookie=cookie_b.split(";")[0])
+        self.assertIn(b"hello:0", svg_a)
+        self.assertNotIn(b"hello:0", svg_b)
 
     def test_viewport_and_error_statuses(self):
-        status, _, svg = self.request("GET", "/app.svg?size=small")
+        _, cookie, page, _ = self.request("GET", "/")
+        sid = cookie.split(";")[0]
+        csrf = self._csrf(page)
+        status, _, svg, _ = self.request("GET", "/app.svg?size=small", cookie=sid)
         self.assertEqual(status, 200)
         self.assertIn(b'width="480.0"', svg)
-        status, _, body = self.request("GET", "/tap/root/does-not-exist")
-        self.assertEqual(status, 400)
+
+        get_status, _, _, get_hdrs = self.request("GET", "/tap/root/does-not-exist",
+                                                  cookie=sid)
+        self.assertEqual(get_status, 405)
+        self.assertEqual(get_hdrs.get("Allow"), "POST")
+
+        post_status, _, body, _ = self.request(
+            "POST", "/tap/root/does-not-exist",
+            body=f"_csrf={csrf}".encode(), cookie=sid)
+        self.assertEqual(post_status, 400)
         self.assertIn(b"Nothing at", body)
+
+    def test_get_never_mutates_tap_field_or_reset(self):
+        _, cookie, page, _ = self.request("GET", "/")
+        sid = cookie.split(";")[0]
+        csrf = self._csrf(page)
+        tap_action = re.search(rb'action="(/tap/[^"?]+)', page).group(1).decode()
+        input_path = re.search(rb'data-path="([^"]+)"', page).group(1).decode()
+
+        # Valid POST bumps clicks to 1 via 303 redirect.
+        st, _, _, hdrs = self.request("POST", tap_action,
+                                      body=f"_csrf={csrf}".encode(), cookie=sid)
+        self.assertEqual(st, 303)
+        self.assertTrue(hdrs.get("Location", "").startswith("/?"))
+
+        # GET on /tap, /field, and /reset must all return 405 without mutating.
+        for bad in (tap_action, f"/field/{input_path}?v=hacked", "/reset"):
+            st, _, _, hdrs = self.request("GET", bad, cookie=sid)
+            self.assertEqual(st, 405, bad)
+            self.assertEqual(hdrs.get("Allow"), "POST")
+
+        _, _, svg, _ = self.request("GET", "/app.svg", cookie=sid)
+        self.assertIn(b":1", svg)
+        self.assertNotIn(b"hacked", svg)
+
+        # Valid POST /reset restores initial state.
+        st, _, _, _ = self.request("POST", "/reset",
+                                   body=f"_csrf={csrf}".encode(), cookie=sid)
+        self.assertEqual(st, 303)
+        _, _, svg_after, _ = self.request("GET", "/app.svg", cookie=sid)
+        self.assertIn(b":0", svg_after)
+
+    def test_csrf_and_origin_guards_reject_forged_posts(self):
+        _, cookie, page, _ = self.request("GET", "/")
+        sid = cookie.split(";")[0]
+        csrf = self._csrf(page)
+        tap_action = re.search(rb'action="(/tap/[^"?]+)', page).group(1).decode()
+
+        # Unestablished session POST -> 403
+        st, _, _, _ = self.request("POST", tap_action,
+                                   body=f"_csrf={csrf}".encode())
+        self.assertEqual(st, 403)
+
+        # Wrong CSRF token -> 403
+        st, _, _, _ = self.request("POST", tap_action,
+                                   body=b"_csrf=wrong", cookie=sid)
+        self.assertEqual(st, 403)
+
+        # Cross-origin Origin header -> 403 even with valid CSRF
+        st, _, _, _ = self.request(
+            "POST", tap_action, body=f"_csrf={csrf}".encode(), cookie=sid,
+            extra_headers={"Origin": "https://evil.example"})
+        self.assertEqual(st, 403)
+
+        # Sec-Fetch-Site: cross-site -> 403
+        st, _, _, _ = self.request(
+            "POST", tap_action, body=f"_csrf={csrf}".encode(), cookie=sid,
+            extra_headers={"Sec-Fetch-Site": "cross-site"})
+        self.assertEqual(st, 403)
+
+        # Matching X-Forwarded-Host (e.g. cloud preview proxy) + X-Plain-CSRF -> 303
+        st, _, _, _ = self.request(
+            "POST", tap_action, body=b"", cookie=sid,
+            extra_headers={
+                "Origin": "https://8400-sandbox.e2b.app",
+                "X-Forwarded-Host": "8400-sandbox.e2b.app",
+                "X-Plain-CSRF": csrf,
+            })
+        self.assertEqual(st, 303)
+
+    def test_oversize_post_body_returns_413(self):
+        _, cookie, page, _ = self.request("GET", "/")
+        sid = cookie.split(";")[0]
+        csrf = self._csrf(page)
+        huge = f"_csrf={csrf}&pad={'x' * 70_000}".encode()
+        st, _, body, _ = self.request("POST", "/sync", body=huge, cookie=sid)
+        self.assertEqual(st, 413)
+        self.assertIn(b"65536", body)
+
+    def test_secret_input_uses_post_body_and_never_echoes_plaintext(self):
+        _, cookie, page, _ = self.request("GET", "/")
+        sid = cookie.split(";")[0]
+        csrf = self._csrf(page)
+        paths = re.findall(rb'data-path="([^"]+)"', page)
+        name_path, pw_path = paths[0].decode(), paths[1].decode()
+
+        pw = "correct-horse-battery-staple"
+        st, _, _, hdrs = self.request(
+            "POST", f"/field/{pw_path}?glass=1",
+            body=f"_csrf={csrf}&v={pw}".encode(), cookie=sid)
+        self.assertEqual(st, 303)
+        self.assertNotIn(pw, hdrs.get("Location", ""))
+
+        _, _, html_out, _ = self.request("GET", "/?glass=1", cookie=sid)
+        _, _, svg_out, _ = self.request("GET", "/app.svg", cookie=sid)
+        self.assertNotIn(pw.encode(), html_out)
+        self.assertNotIn(pw.encode(), svg_out)
+        self.assertIn(b'data-secret="1" data-filled="1"', html_out)
+        self.assertIn("&quot;secret_pw&quot;: &quot;••••••&quot;".encode("utf-8"),
+                      html_out)
+
+        # Syncing only the plain input (without touching secret_pw) preserves secret_pw.
+        st, _, _, _ = self.request(
+            "POST", "/sync",
+            body=f"_csrf={csrf}&f_{name_path}=Ada".encode(), cookie=sid)
+        self.assertEqual(st, 204)
+        _, _, html_after, _ = self.request("GET", "/?glass=1", cookie=sid)
+        self.assertIn(b'data-secret="1" data-filled="1"', html_after)
+        self.assertNotIn(pw.encode(), html_after)
 
 
 # ---------------------------------------------------------------- P0-11
