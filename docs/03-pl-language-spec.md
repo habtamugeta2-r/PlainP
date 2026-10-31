@@ -318,7 +318,9 @@ every 30s: refresh posts                         # time, same spirit
 ```
 A resource is matched with `when` (§6.4) on `loading/failed/ready` — loading
 and error UI are therefore *unavoidable to consider* (exhaustiveness) and
-trivial to write. Inside actions, calls like `place-order(cart)` simply
+trivial to write. `refresh posts` discards the cached value and reads the
+source once more; it never creates a second spelling for unwrapping (that
+stays `ready-or`). Inside actions, calls like `place-order(cart)` simply
 produce `ok/failed` results (§7.4); the runtime suspends the isolate fiber,
 never the UI (Doc 02 §6.1). Concurrency is structured: `together:` blocks
 run steps concurrently and join; there are no user threads, locks, or races

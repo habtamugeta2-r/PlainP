@@ -95,19 +95,28 @@ class TestP001SlotScope(unittest.TestCase):
         self.assertEqual(state["email"], "ada@example.com")
         self.assertEqual(state["password"], "hunter2!!")
 
-    def test_example_06_submit_hits_the_documented_network_gate(self):
-        # Slot scopes are fixed; the remaining blocker is the Stage-3 network
-        # call itself (P0-06), which must fail before touching state.
+    def test_example_06_submit_runs_and_reports_offline(self):
+        # M1: the request seam runs. With no transport configured the failed
+        # branch is taken honestly, and the form stops "sending".
         app = App.for_file(ROOT / "examples/06-form-validation.plain")
+        app.build(500, 800)
+        for name, value in (("name", "Ada"), ("email", "ada@example.com"),
+                            ("password", "hunter2!!")):
+            app.build(500, 800)
+            node = [n for n in app.scene.walk()
+                    if n.kind == "input" and n.bind and n.bind[0] == name][0]
+            app.set_field(node.path, value, submit=False)
         app.build(500, 800)
         btn = [n for n in app.scene.walk()
                if n.kind == "button" and "Create account" in n.text][0]
-        with self.assertRaises(UnsupportedYet) as caught:
-            app.tap(btn.path)
-        self.assertIn("post", caught.exception.message)
+        app.tap(btn.path)
+        app.build(500, 800)
         state = app.runtime.scopes["page:SignUp"].state
-        self.assertFalse(state["touched"])
+        self.assertTrue(state["touched"])
         self.assertFalse(state["sending"])
+        self.assertIn("offline", state["server-problem"])
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertTrue(any("offline" in t for t in texts))
 
 
 # ---------------------------------------------------------------- P0-02
@@ -288,7 +297,7 @@ class TestP005Formatter(unittest.TestCase):
 # ---------------------------------------------------------------- P0-06
 
 class TestP006ActionPreflight(unittest.TestCase):
-    def test_chat_send_does_not_clear_draft_before_failing(self):
+    def test_chat_send_fails_offline_and_restores_draft(self):
         app = App.for_file(ROOT / "examples/04-chat.plain")
         app.build(412, 800)
         field = [n for n in app.scene.walk()
@@ -297,29 +306,29 @@ class TestP006ActionPreflight(unittest.TestCase):
         app.build(412, 800)
         btn = [n for n in app.scene.walk()
                if n.kind == "button" and n.text == "Send"][0]
-        with self.assertRaises(UnsupportedYet) as caught:
-            app.tap(btn.path)
-        self.assertIn("Stage 3", caught.exception.message)
-        self.assertIn("post", caught.exception.message)
-        self.assertEqual(app.runtime.scopes["page:RoomPage"].state["draft"], "hello")
+        app.tap(btn.path)
+        app.build(412, 800)
+        state = app.runtime.scopes["page:RoomPage"].state
+        self.assertEqual(state["draft"], "hello")       # restored by failure
+        self.assertIn("offline", state["problem"].lower())
+        self.assertIn("offline", app.runtime.last_request["result"][1])
 
-    def test_show_toast_is_a_plain_stage_3_message(self):
+    def test_show_toast_is_visible_to_the_app(self):
         app = App('page Home at "/":\n  column:\n'
                   '    button "b" on tap: show toast "hi"\n')
         app.build()
         btn = [n for n in app.scene.walk() if n.kind == "button"][0]
-        with self.assertRaises(UnsupportedYet) as caught:
-            app.tap(btn.path)
-        self.assertIn("toast", caught.exception.message)
+        app.tap(btn.path)
+        self.assertEqual(app.runtime.toasts, ["hi"])
 
-    def test_refresh_is_a_plain_stage_3_message(self):
+    def test_refresh_unknown_resource_is_plain(self):
         app = App('page Home at "/":\n  to r:\n    refresh x\n'
                   '  column:\n    button "b" on tap r\n')
         app.build()
         btn = [n for n in app.scene.walk() if n.kind == "button"][0]
-        with self.assertRaises(UnsupportedYet) as caught:
+        with self.assertRaises(PlainError) as caught:
             app.tap(btn.path)
-        self.assertIn("refresh", caught.exception.message)
+        self.assertIn("no resource called `x`", caught.exception.message)
 
 
 # ---------------------------------------------------------------- P0-07

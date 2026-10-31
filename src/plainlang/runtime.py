@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import json
 import re
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from .ast_nodes import (
@@ -71,24 +74,37 @@ class Navigate(Exception):
 
 
 # Resource values are ("ready", data) | ("failed", reason) | ("loading", None)
-def _resource_match(decl: ResourceDecl, providers: dict):
-    """Prototype data providers (sidecar JSON / tests). Matching: exact,
-    then {param}-collapsed, then last path segment."""
+def _provider_lookup(source: str, providers: dict):
+    """Sidecar/fixture value for a resource address, or None.
+
+    Matching is exact, then `{param}`-collapsed, then last path segment —
+    the same rule the preview has always used for sidecars.
+    """
     if not providers:
+        return None
+    exact = [source, re.sub(r"\{[^}]*\}", "*", source)]
+    # Exact and `{param}`-collapsed keys win over the loose last-segment
+    # fallback, so `/rooms/r2/messages` never picks r1's fixture.
+    for cand in exact:
+        for key, val in providers.items():
+            if key == cand or re.sub(r"\{[^}]*\}", "*", str(key)) == cand:
+                return val
+    last = source.rstrip("/").rsplit("/", 1)[-1]
+    for key, val in providers.items():
+        if str(key).rstrip("/").rsplit("/", 1)[-1] == last:
+            return val
+    return None
+
+
+def _resource_match(decl: ResourceDecl, providers: dict):
+    """Resolve a sidecar resource; unmatched resources are an honest failure."""
+    val = _provider_lookup(decl.source.strip().strip('"'), providers)
+    if val is None:
         return ("failed",
                 "no data source is connected in this prototype yet")
-    source = decl.source.strip().strip('"')
-    candidates = [source]
-    collapsed = re.sub(r"\{[^}]*\}", "*", source)
-    candidates.append(collapsed)
-    candidates.append(source.rstrip("/").rsplit("/", 1)[-1])
-    for key, val in providers.items():
-        kcol = re.sub(r"\{[^}]*\}", "*", str(key))
-        if key in candidates or kcol in candidates or str(key).rsplit("/", 1)[-1] == candidates[-1]:
-            if isinstance(val, dict) and val.get("_failed"):
-                return ("failed", str(val["_failed"]))
-            return ("ready", val)
-    return ("failed", "no data source is connected in this prototype yet")
+    if isinstance(val, dict) and val.get("_failed"):
+        return ("failed", str(val["_failed"]))
+    return ("ready", val)
 
 
 class Scope:
@@ -118,6 +134,10 @@ class Runtime:
         self.providers = providers or {}
         self.persist_path = Path(persist_path) if persist_path else None
         self._store: dict | None = None
+        self.toasts: list[str] = []
+        self.last_request: dict | None = None
+        self.resource_cache: dict[str, tuple] = {}
+        self.resource_meta: dict[str, dict] = {}
 
     # -- persistence (`keep`) ---------------------------------------------
     @property
@@ -209,12 +229,14 @@ class Runtime:
             elif isinstance(stmt, ResourceDecl):
                 self.shared[stmt.name] = _resource_match(stmt, self.providers)
 
-    def env_for(self, sc: Scope, extra: dict | None = None) -> dict:
+    def env_for(self, sc: Scope, extra: dict | None = None,
+                resources: bool = True) -> dict:
         """Read-view: shared + state + derived (recomputed) + locals."""
         env = dict(self.shared)
         env.update(sc.state)
-        for name, decl in sc.resources.items():
-            env[name] = _resource_match(decl, self.providers)
+        if resources:
+            for name, decl in sc.resources.items():
+                env[name] = self._resource_value(sc, decl, extra)
         if extra:
             env.update(extra)
         for d in sc.derived:  # decl order: later may use earlier
@@ -277,14 +299,9 @@ class Runtime:
         self._preflight_src(text, line_no, col, text)
 
     def _preflight_src(self, text: str, line_no, col=None, raw=""):
-        if re.match(r"^(post|fetch)\b", text):
-            raise UnsupportedYet("`post` (network calls)", "Stage 3",
-                                 line_no, raw or text, col=col,
-                                 length=len(text.split()[0]))
-        if text.startswith("show toast") or _has_top_level_word(text, "then"):
-            raise UnsupportedYet("toasts / `then` chains", "Stage 3",
-                                 line_no, raw or text, col=col,
-                                 length=max(1, len(text.split()[0])))
+        # Every action statement has an implementation as of M1. Keep this
+        # hook: a future statement must fail before earlier ones mutate state.
+        return
 
     def _preflight_stmt(self, stmt):
         if isinstance(stmt, AssignStmt):
@@ -293,10 +310,6 @@ class Runtime:
         elif isinstance(stmt, RawStmt):
             text = stmt.text.strip()
             self._preflight_src(text, stmt.line_no, stmt.col, stmt.raw or text)
-            if text.startswith("refresh "):
-                raise UnsupportedYet("`refresh …`", "Stage 3",
-                                     stmt.line_no, stmt.raw or text,
-                                     col=stmt.col, length=len("refresh"))
             self.preflight(stmt.children)
         elif isinstance(stmt, IfNode):
             if stmt.inline_then:
@@ -307,6 +320,85 @@ class Runtime:
             body = stmt.body if isinstance(stmt, ForNode) else [
                 s for br in stmt.branches for s in br.body]
             self.preflight(body)
+
+    # -- resources: cache + refresh (NET-01/02/05/06 subset) ----------------
+    def _resource_key(self, sc: Scope, decl: ResourceDecl, extra) -> str:
+        # The address is part of the key: one page scope may render different
+        # params (`/rooms/r1` vs `/rooms/r2`) without sharing stale data.
+        return f"{sc.path}:{decl.name}:{self._resource_address(sc, decl, extra)}"
+
+    def _resource_address(self, sc: Scope, decl: ResourceDecl, extra) -> str:
+        src = decl.source.strip()
+        if src.startswith("live "):
+            src = src[len("live "):].strip()
+        env = self.env_for(sc, extra, resources=False)
+        try:
+            val = evaluate_text(src, env, self.program.kinds, decl.line_no)
+            return str(val)
+        except PlainError:
+            return src.strip('"')
+
+    def _resource_value(self, sc: Scope, decl: ResourceDecl, extra=None,
+                        force: bool = False) -> tuple:
+        key = self._resource_key(sc, decl, extra)
+        meta = self.resource_meta.setdefault(key, {"attempts": 0})
+        cached = self.resource_cache.get(key)
+        if not force and cached is not None:
+            # LRU touch: reuse moves the entry to the newest end.
+            self.resource_cache.pop(key)
+            self.resource_cache[key] = cached
+            return cached
+        value, etag = self._load_resource(sc, decl, extra, cached,
+                                          meta.get("etag"))
+        self.resource_cache.pop(key, None)
+        self.resource_cache[key] = value
+        meta["attempts"] += 1
+        meta["value"] = value[0]
+        if etag is not None:
+            meta["etag"] = etag
+        elif value[0] == "ready":
+            meta.pop("etag", None)  # a fresh 200 without ETag invalidates it
+        while len(self.resource_cache) > _RESOURCE_CACHE_LIMIT:
+            oldest = next(iter(self.resource_cache))
+            self.resource_cache.pop(oldest)
+            self.resource_meta.pop(oldest, None)
+        return value
+
+    def _load_resource(self, sc: Scope, decl: ResourceDecl, extra=None,
+                       cached=None, etag=None) -> tuple[tuple, str | None]:
+        """Load one resource: fixture, conditional HTTP GET, or honest fail."""
+        address = self._resource_address(sc, decl, extra)
+        fixture = _provider_lookup(address, self.providers)
+        if fixture is not None:
+            if isinstance(fixture, dict) and fixture.get("_failed"):
+                return ("failed", str(fixture["_failed"])), None
+            return ("ready", fixture), None
+        if address.startswith(("http://", "https://")):
+            out: dict = {}
+            conditional = {"If-None-Match": etag} if etag else None
+            tag, value = _http_request("GET", address, None, "empty",
+                                       decl.line_no, extra_headers=conditional,
+                                       meta=out)
+            if tag == "not_modified":
+                if cached is not None:
+                    return cached, out.get("etag") or etag
+                return ("failed", "server 304"), etag
+            # Resources carry `ready`, request Results carry `ok`.
+            return (("ready" if tag == "ok" else tag, value),
+                    out.get("etag"))
+        return (("failed",
+                 f"no data source is connected for {address} in this prototype"),
+                None)
+
+    def refresh(self, sc: Scope, name: str, extra=None, line_no=None):
+        """`refresh messages` — drop the cached value and fetch once."""
+        decl = sc.resources.get(name)
+        if decl is None:
+            raise PlainError(
+                f"There's no resource called `{name}` to refresh.",
+                line_no=line_no,
+                hint=f"resources are declared as `{name} from \"/path\"`")
+        return self._resource_value(sc, decl, extra, force=True)
 
     def exec_text(self, sc: Scope, text: str, extra, line_no):
         """Execute an inline one-liner like `count += 1` / `add-task`."""
@@ -320,7 +412,114 @@ class Runtime:
             return
         self.exec_stmt(sc, RawStmt(text, line_no or 0), extra)
 
+    # -- network / request results (M1) ------------------------------------
+    @staticmethod
+    def _is_request(src: str) -> bool:
+        return bool(re.match(r"^(post|fetch)\b", (src or "").strip()))
+
+    def _write_value(self, sc, target: str, value, extra):
+        parts = target.split(".")
+        if len(parts) == 1:
+            root = parts[0]
+            if root in self.shared and root not in sc.state:
+                self.shared[root] = value
+            else:
+                sc.state[root] = value
+            return
+        env = self.env_for(sc, extra)
+        obj = env.get(parts[0])
+        if not isinstance(obj, dict):
+            raise PlainError(f"`{parts[0]}` isn't a record, so it has no "
+                             f"parts to change.")
+        obj[parts[-1]] = value
+
+    def _request(self, src: str, sc: Scope, extra, line_no):
+        """Evaluate `post URL [with … | body …]` / `fetch URL`.
+
+        Result shape is Doc 03 §7.4: `("ok", value)` or
+        `("failed", sentence)`. Relative URLs use sidecar fixtures keyed
+        `"POST /path"` / `"FETCH /path"`; without one the prototype reports
+        an honest offline failure instead of pretending. Absolute http(s)
+        URLs use the stdlib transport (timeout, JSON when announced).
+        """
+        text = (src or "").strip()
+        m = re.match(r"^(post|fetch)\s+(.+)$", text)
+        if not m:
+            raise PlainError(f"I couldn't read this request: `{text}`.",
+                             line_no=line_no)
+        method = m.group(1).lower()
+        rest = m.group(2).strip()
+        url_src, rest = _take_url_source(rest, line_no)
+        env = self.env_for(sc, extra)
+        url = evaluate_text(url_src, env, self.program.kinds, line_no)
+        if not isinstance(url, str) or not url:
+            raise PlainError("A request needs an address (a string).",
+                             line_no=line_no, line_text=text,
+                             hint='post "/api/signup"')
+        body = None
+        body_kind = "empty"
+        rest = rest.strip()
+        if rest.startswith("with "):
+            arg_srcs = _split_args(rest[len("with "):])
+            values = [evaluate_text(a.strip(), env, self.program.kinds, line_no)
+                      for a in arg_srcs]
+            if all(re.match(r"^[A-Za-z_][\w-]*(?:\.[\w-]+)*$", a.strip())
+                   for a in arg_srcs):
+                body = {a.strip().split(".")[-1]: v
+                        for a, v in zip(arg_srcs, values)}
+            else:
+                body = values
+            body_kind = "json"
+        elif rest.startswith("body "):
+            body = evaluate_text(rest[len("body "):], env,
+                                 self.program.kinds, line_no)
+            body_kind = "raw" if isinstance(body, (str, bytes)) else "json"
+        elif rest:
+            raise PlainError(
+                f"I don't know how to send `{rest}` with a request.",
+                line_no=line_no, line_text=text,
+                hint="use `with value, value` or `body text`")
+
+        method_upper = "POST" if method == "post" else "GET"
+        fixture_method = "POST" if method == "post" else "FETCH"
+        fixture = self._fixture_response(fixture_method, url)
+        if fixture is not None:
+            result = fixture
+        elif url.startswith(("http://", "https://")):
+            result = _http_request(method_upper, url, body, body_kind, line_no)
+        else:
+            result = ("failed", f"offline: no transport for {url} "
+                                f"in this prototype yet")
+        self.last_request = {"method": method_upper, "url": url,
+                             "body": body, "result": result,
+                             "line": line_no}
+        return result
+
+    def _fixture_response(self, method: str, url: str):
+        prefix = method + " "
+        for key, val in self.providers.items():
+            if not isinstance(key, str) or not key.upper().startswith(prefix):
+                continue
+            pattern = key[len(prefix):]
+            if not _url_matches(pattern, url):
+                continue
+            if isinstance(val, dict) and val.get("_failed"):
+                return ("failed", str(val["_failed"]))
+            if isinstance(val, dict) and "_ok" in val:
+                return ("ok", val["_ok"])
+            return ("ok", val)
+        return None
+
     def _assign(self, sc, target, op, expr_src, extra, line_no):
+        if op == "=" and self._is_request(expr_src):
+            value = self._request(expr_src, sc, extra, line_no)
+            root = target.split(".")[0]
+            if root not in sc.state and root not in self.shared and extra is not None:
+                extra[target] = value
+            else:
+                self._write_value(sc, target, value, extra)
+            self.save_kept()
+            return
         env = self.env_for(sc, extra)
         root = target.split(".")[0]
         # Write to shared if this name lives there, else instance state.
@@ -355,13 +554,27 @@ class Runtime:
         if isinstance(stmt, AssignStmt):
             # new names inside actions are locals unless known state/shared
             root = stmt.target.split(".")[0]
-            if stmt.op == "=" and root not in sc.state and root not in self.shared \
-                    and extra is not None:
+            if (stmt.op == "=" and root not in sc.state
+                    and root not in self.shared and extra is not None
+                    and not self._is_request(stmt.expr)):
                 env = self.env_for(sc, extra)
                 from .expr import evaluate_text as ev
                 extra[stmt.target] = ev(stmt.expr, env, self.program.kinds, stmt.line_no)
                 return
             self._assign(sc, stmt.target, stmt.op, stmt.expr, extra, stmt.line_no)
+            return
+        if isinstance(stmt, WhenNode):
+            env = self.env_for(sc, extra)
+            subject = evaluate_text(stmt.subject, env, self.program.kinds,
+                                    stmt.line_no)
+            branch, payload_name, payload = _match_when(subject, stmt)
+            if branch is None:
+                return
+            bout = dict(extra or {})
+            if payload_name:
+                bout[payload_name] = payload
+            for s in branch.body:
+                self.exec_stmt(sc, s, bout)
             return
         if isinstance(stmt, IfNode):
             env = self.env_for(sc, extra)
@@ -382,6 +595,11 @@ class Runtime:
 
     def _exec_raw(self, sc: Scope, stmt: RawStmt, extra):
         text = stmt.text.strip()
+        parts = _split_top_level_word(text, "then")
+        if len(parts) > 1:
+            for part in parts:
+                self.exec_text(sc, part, extra, stmt.line_no)
+            return
         if text == "return":
             raise _Return()
         # list ops: `tasks add X` / `tasks remove X`
@@ -419,8 +637,19 @@ class Runtime:
             if isinstance(name, dict):
                 name = name.get("page") or name.get("title")
             raise Navigate(str(name), [])
-        if text.startswith("show toast") or " then " in text:
-            raise UnsupportedYet("toasts / `then` chains", "Stage 3", stmt.line_no, text)
+        if text.startswith("refresh "):
+            self.refresh(sc, text[len("refresh "):].strip(), extra,
+                         stmt.line_no)
+            return
+        if text.startswith("show toast"):
+            msg = evaluate_text(text[len("show toast"):].strip(),
+                                self.env_for(sc, extra), self.program.kinds,
+                                stmt.line_no)
+            self.toasts.append(str(msg))
+            return
+        if self._is_request(text):
+            self._request(text, sc, extra, stmt.line_no)
+            return
         if re.match(r"^[\w-]+(\(.*\))?$", text):
             self.call_action(sc, text, extra, stmt.line_no)
             return
@@ -431,6 +660,170 @@ class Runtime:
         self.scopes.clear()
         self.shared.clear()
         self._shared_ready = False
+        self.toasts.clear()
+        self.last_request = None
+        self.resource_cache.clear()
+        self.resource_meta.clear()
+
+
+def _take_url_source(rest: str, line_no=None) -> tuple[str, str]:
+    """First request argument: a quoted string or one bare token."""
+    if not rest:
+        raise PlainError("A request needs an address.", line_no=line_no)
+    if rest[0] == '"':
+        out, i, escaped = ['"'], 1, False
+        while i < len(rest):
+            ch = rest[i]
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                return "".join(out), rest[i + 1:]
+            i += 1
+        raise PlainError("This string never closes.", line_no=line_no,
+                         line_text=rest)
+    parts = rest.split(None, 1)
+    return parts[0], (parts[1] if len(parts) > 1 else "")
+
+
+def _url_matches(pattern: str, url: str) -> bool:
+    collapse = lambda s: re.sub(r"\{[^}]*\}", "*", str(s))
+    return (pattern == url or collapse(pattern) == collapse(url)
+            or pattern.rstrip("/").rsplit("/", 1)[-1]
+            == url.rstrip("/").rsplit("/", 1)[-1])
+
+
+_HTTP_ATTEMPTS = 3
+_HTTP_BACKOFF = 0.05  # seconds; doubles after each failed safe request
+_RESOURCE_CACHE_LIMIT = 128  # entries; oldest is evicted first
+
+
+def _retryable_status(code: int) -> bool:
+    return code in (408, 425, 429) or 500 <= code <= 599
+
+
+def _http_request(method: str, url: str, body, body_kind: str,
+                  line_no=None, retries: bool | None = None,
+                  extra_headers: dict | None = None,
+                  meta: dict | None = None):
+    """One HTTP exchange. Safe methods retry transient failures.
+
+    `GET`/`HEAD` are idempotent, so they get bounded exponential backoff
+    (3 attempts, 50 ms then 100 ms). `POST` never retries here: a replay can
+    duplicate a write, and offline queueing is a separate primitive (NET-04).
+
+    `extra_headers` lets a resource send `If-None-Match`; `meta` receives
+    response metadata (`etag`, `not_modified`) without changing the public
+    Result tuple.
+    """
+    if retries is None:
+        retries = method in ("GET", "HEAD")
+    data = None
+    headers = {"Accept": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
+    if body is not None:
+        if body_kind == "json":
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        else:
+            data = (body if isinstance(body, bytes)
+                    else str(body).encode("utf-8"))
+            headers["Content-Type"] = "text/plain; charset=utf-8"
+    req = urllib.request.Request(url, data=data, headers=headers,
+                                 method=method)
+    attempts = _HTTP_ATTEMPTS if retries else 1
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read()
+                if meta is not None:
+                    meta["etag"] = resp.headers.get("ETag")
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "json" in ctype:
+                    return ("ok", json.loads(raw.decode("utf-8")))
+                return ("ok", raw.decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 304 and meta is not None and extra_headers:
+                e.close()
+                meta["not_modified"] = True
+                return ("not_modified", None)
+            if attempt + 1 < attempts and _retryable_status(e.code):
+                e.close()
+                time.sleep(_HTTP_BACKOFF * (2 ** attempt))
+                continue
+            e.close()
+            return ("failed", f"server {e.code}")
+        except urllib.error.URLError as e:
+            if attempt + 1 < attempts:
+                time.sleep(_HTTP_BACKOFF * (2 ** attempt))
+                continue
+            return ("failed", f"offline: {getattr(e, 'reason', e)}")
+        except (TimeoutError, OSError) as e:
+            if attempt + 1 < attempts:
+                time.sleep(_HTTP_BACKOFF * (2 ** attempt))
+                continue
+            return ("failed", f"offline: {e}")
+        except ValueError as e:  # invalid JSON from the server
+            return ("failed", f"bad response: {e}")
+    return ("failed", "offline: request failed")  # defensive; loop returns
+
+
+def _match_when(subject, when_node):
+    """Match a result/resource tuple against `is` branches."""
+    if isinstance(subject, tuple) and len(subject) == 2:
+        tag, payload = subject
+    else:
+        tag, payload = "ready", subject
+    for br in when_node.branches:
+        parts = br.pattern.split()
+        if parts and parts[0] == tag:
+            return br, (parts[1] if len(parts) > 1 else None), payload
+    return None, None, None
+
+
+def _split_top_level_word(text: str, word: str) -> list[str]:
+    """Split `a then b` outside strings/brackets. `then` in data is safe."""
+    parts, cur = [], []
+    depth = 0
+    in_str = False
+    escaped = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            cur.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            cur.append(ch)
+            i += 1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if (depth == 0 and text.startswith(word, i)
+                and (i == 0 or text[i - 1] in " \t")
+                and (i + len(word) == len(text)
+                     or text[i + len(word)] in " \t")):
+            parts.append("".join(cur).strip())
+            cur = []
+            i += len(word)
+            continue
+        cur.append(ch)
+        i += 1
+    parts.append("".join(cur).strip())
+    return [p for p in parts if p]
 
 
 def _split_args(src: str) -> list[str]:

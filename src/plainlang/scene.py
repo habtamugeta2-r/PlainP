@@ -159,7 +159,8 @@ class SceneBuilder:
             return list(slot_children or [])
         if node.kind[:1].isupper():
             if node.kind in STDLIB_COMPONENTS:
-                return STDLIB_COMPONENTS[node.kind](self, node, env, path, scope_path)
+                return STDLIB_COMPONENTS[node.kind](self, node, env, path,
+                                                    scope_path, extra)
             raise UnsupportedYet(f"component `{node.kind}` (not defined in "
                                  f"this file — stdlib/Openly)", "Stage 3/4",
                                  node.line_no)
@@ -458,7 +459,7 @@ def _child_size(sn, avail):
     return (max(w, 0.0), max(h, 0.0))
 
 
-def _stdlib_error_box(builder, node, env, path, scope_path):
+def _stdlib_error_box(builder, node, env, path, scope_path, extra=None):
     msg = builder._node_text(node, env)
     box = SceneNode(kind="box", source_line=node.line_no, path=path,
                     scope_path=scope_path,
@@ -467,6 +468,14 @@ def _stdlib_error_box(builder, node, env, path, scope_path):
     txt = SceneNode(kind="text", source_line=node.line_no, path=path + "/0",
                     scope_path=scope_path, text=f"⚠ {msg}",
                     props={"color": "danger", "size": 15.0})
+    # `ErrorBox … retry refresh messages` — the retry prop was previously
+    # inert. Wire it to the same refresh action a user could write.
+    retry = node.prop("retry")
+    if retry is not None and retry.value.strip().startswith("refresh "):
+        res = retry.value.strip()[len("refresh "):].strip()
+        ev = Event("tap", inline=f"refresh {res}", line_no=node.line_no)
+        # Carry the caller's params so `refresh` can re-evaluate `{room.id}`.
+        box.events["tap"] = (ev, scope_path, dict(extra or {}))
     box.children = [txt]
     return [box]
 

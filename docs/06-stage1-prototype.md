@@ -37,7 +37,7 @@ Doc 03 (spec amendment) or in §5 below.
 ./plain render examples/00-hello-world.plain --out hello.svg
 ./plain run    examples/01-counter.plain        # http://localhost:8000 — click +1
 ./plain a11y   examples/01-counter.plain        # derived accessibility tree
-make test                                       # 76 tests, <1.5s
+make test                                       # 92 tests, <2s
 ```
 
 The `run` preview shows the app, its full source, the derived a11y tree and
@@ -46,7 +46,7 @@ buttons (works with JS disabled — taps are scene-path links), switch
 viewport sizes (incl. a 360×640 "cheap-android" preset, Constraint 6), and
 **keeps state across reloads while applying your edits** (see §6.4).
 
-## 3. Module map (~5.5k LOC incl. tests; well inside the 500k budget)
+## 3. Module map (~6.2k LOC incl. tests; well inside the 500k budget)
 
 | File | Blueprint home | What it does |
 |---|---|---|
@@ -102,14 +102,15 @@ PL lines / scene nodes / SVG bytes / build ms — currently **9/9 render,
 the number).
 
 **Still deferred (render raises `UnsupportedYet` naming its stage):**
-real network fetch for resources/`post` (sidecar providers stand in),
-animation/springs + page transitions (declared, ignored), gestures beyond
-tap, themes as author data (built-in palette), `shared sync` CRDTs,
-scroll viewport culling, HarfBuzz shaping/wrapping polish, non-`ErrorBox`
-stdlib components, the Rust/GPU production engine (ADR-1/5 — §7).
+a configurable retry policy, streaming `from live`, request headers/query
+builders, cache dedupe/stale-while-revalidate/disk, animation/springs +
+page transitions (declared, ignored), gestures beyond tap, themes as author
+data (built-in palette), `shared sync` CRDTs, scroll viewport culling,
+HarfBuzz shaping/wrapping polish, non-`ErrorBox` stdlib components, the
+Rust/GPU production engine (ADR-1/5 — §7).
 
 **Exit-criteria scoreboard (Doc 05):** Stage 1 ✅ (Hello World <5 min;
-byte-identical SVG; ~4.6k LOC ≪ 60k budget). Stage 2 ✅ in prototype
+byte-identical SVG; ~4.9k LOC ≪ 60k budget). Stage 2 ✅ in prototype
 (00/01/02/03 run as written; todo usable by typing; frame costs are
 CPython numbers, not the Rust budget — noted honestly). Stage 3 ✅ core
 (04–08 render + interact as tested above). Stage 4/5 partially (stdlib
@@ -151,17 +152,33 @@ belongs in Doc 03 at the next spec rev:
 - **G-9 Page-link literals:** `Home-link` evaluates to the link record
   `{title, page}` for `page Home` (ex. 03) — navigation data stays plain
   values; `go to link.page` navigates by the record's page.
-- **G-10 `ready-or` ratified** (pressure point 2, half): `photos ready-or []`
-  is the resource-unwrap spelling. `refresh x` remains open for the RFC.
+- **G-10 `ready-or` ratified** (pressure point 2): `photos ready-or []`
+  is the resource-unwrap spelling. `refresh x` is now executable: it drops
+  the cached value and fetches once, and an unknown `x` is a plain error.
 
 Still open: #4 shared-element `id` retention (parsed; animation pending).
 
 **Newly known gaps (now visible as `plain check` notes, never silent):**
 `theme` / `use` are parsed and preserved but not applied; `transition` swaps
 instantly; only `tap`, `change`, and `submit` are dispatched (other valid
-gestures raise `UnsupportedYet` if fired); `post` / `fetch` / `show toast` /
-`then` / `refresh` raise `UnsupportedYet` *before* any state changes
-(preflight, P0-06); text metrics remain the deterministic approximation.
+gestures raise `UnsupportedYet` if fired); `refresh x` forces one refetch
+(no polling yet); `ErrorBox … retry refresh x` dispatches that same refresh
+on tap. Safe GETs (`fetch` and resources) retry transient failures three
+times with 50→100 ms backoff; `POST` never auto-retries, so a write cannot
+be silently duplicated. Text metrics remain the deterministic approximation.
+Resources are cached in memory per `(scope, name, resolved address)`, bounded
+at 128 entries with LRU eviction; a resource over real http(s) is fetched on
+first use and reused until `refresh`. A refresh sends `If-None-Match` when an
+ETag was seen, and a `304` keeps the cached value. `post` / `fetch` execute
+through a request seam: sidecar keys `"POST /path"` / `"FETCH /path"` or real
+http(s), returning `ok`/`failed` results consumed by `when`; `then` and
+`show toast` work in actions. Without a fixture/transport a request returns a plain offline
+sentence — never a crash and never a fake success.
+**Known example defect:** example 08's Add-to-cart line references an
+undeclared `cart` list and a `Chair(…)` kind that the file never defines.
+The parser accepts it; the runtime reports a plain error at tap time. The
+examples are normative, so this needs a spec/example decision rather than a
+silent runtime fallback.
 
 ## 6. Deliberate divergences (prototype simplifications, seams marked)
 
@@ -183,9 +200,9 @@ gestures raise `UnsupportedYet` if fired); `post` / `fetch` / `show toast` /
 
 ## 7. Next
 
-**Remaining oracle work:** real HTTP resources (replace sidecar providers
-behind the same `("ready"|"failed")` seam); animation timing/springs in
-the preview; `shared sync` sketch; themes as data; scroll culling; LSP.
+**Remaining oracle work:** configurable retry policy + streaming behind the
+existing resource seam (NET-03/07); animation timing/springs in the preview;
+`shared sync` sketch; themes as data; scroll culling; LSP.
 
 ## 8. Rust port status (production path, ADR-1)
 

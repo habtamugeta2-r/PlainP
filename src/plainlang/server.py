@@ -46,6 +46,9 @@ white-space:pre-wrap;font-size:14px;max-width:640px}
 .sizebar a{background:#fff;border:1px solid #D8D8E0;color:#16161A;border-radius:999px;
 padding:5px 12px;font-size:12.5px;text-decoration:none}
 .sizebar a.on{background:#5B5BD6;color:#fff;border-color:#5B5BD6}
+.toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);
+background:#16161A;color:#fff;border-radius:999px;padding:9px 16px;
+font-size:13.5px;box-shadow:0 8px 24px rgba(20,20,40,.25);max-width:90%}
 """
 
 # Progressive enhancement ONLY (preview chrome, not PL semantics): if the
@@ -246,6 +249,9 @@ def make_handler(app_path: Path, width: float, height: float):
                     a11y_text = a11y_mod.render_text(tree) if tree else "(empty)"
                     warns = warnings_for(app.program)
                     warn_text = "\n\n".join(w.render() for w in warns) or "(none)"
+                    toast_text = app.runtime.toasts[-1] if app.runtime.toasts else ""
+                    toast_html = (f'<div class="toast">{html.escape(toast_text)}</div>'
+                                  if toast_text else "")
                     page_name = app.stack[-1][0] if app.stack else "?"
             except PlainError as e:
                 return self._error(
@@ -264,7 +270,7 @@ def make_handler(app_path: Path, width: float, height: float):
 <div class="sizebar"><span>Viewport:</span>{size_links}
 <span style="font-size:12.5px;color:#6E6E7A">type + Enter to submit · edit the file, reload, state survives</span></div>
 <main>
-<div class="stage">{svg}{overlays}</div>
+<div class="stage">{svg}{overlays}{toast_html}</div>
 <div style="display:flex;flex-direction:column;gap:16px;flex:1;min-width:300px">
 <div class="panel"><h2>Source — this file is the whole app</h2>
 <pre>{html.escape(app.source)}</pre></div>
