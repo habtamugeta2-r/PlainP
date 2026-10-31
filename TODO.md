@@ -16,7 +16,7 @@
 ## TL;DR — the six things that matter most
 
 > **M0 status (2026-10-31): ✅ complete.** All twelve P0 items below are
-> implemented and covered by tests: the suite is now **88 tests**, `./plain
+> implemented and covered by tests: the suite is now **90 tests**, `./plain
 > check` stays green with visible notes for future syntax, `./plain fmt
 > --check` is clean, `./plain validate` enforces committed node/SVG floors,
 > and the preview has per-browser sessions. **M1 has started:** `post` /
@@ -403,7 +403,7 @@ signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
 
 ```text
 $ PYTHONPATH=src python3 -m unittest discover -s tests
-Ran 88 tests in 1.7s — OK
+Ran 90 tests in 1.9s — OK
 
 $ ./plain check examples/*.plain
 9/9 OK + honest notes (gestures/transition/theme/use are declared, not faked)
@@ -418,7 +418,7 @@ $ cargo --version
 not installed in this sandbox; CI remains the Rust compiler of record
 ```
 
-**Code volume (actual after M0/M1 tranche 1):** Python package 4 865 LOC; tests 1 165 LOC;
+**Code volume (actual after M1 tranche 2):** Python package 4 980 LOC; tests 1 299 LOC;
 Rust 2 414 LOC (15 `#[test]`s). Docs and CI assert the test count so it
 cannot drift again (P0-11/P0-12).
 
@@ -450,9 +450,8 @@ cannot drift again (P0-11/P0-12).
       a distinct `EffectDecl` (today they fall through to `RawStmt`).
 - [ ] **FE-08 · `every 30s:` timers** — `P1 · S`. Parse and route to the
       runtime timer resource; never a hidden `setInterval`.
-- [ ] **FE-09 · `refresh x` statement** — `P1 · S`. Resolve G-10's open
-      spelling once, implement it, record it in Doc 03, keep
-      `ready-or` as the only unwrap form.
+- [x] **FE-09 · `refresh x` statement** — `P1 · S`. Implemented and recorded
+      in Doc 03 §6.5 + Doc 06 G-10; `ready-or` remains the only unwrap form.
 - [ ] **FE-10 · Page routes with params** — `P1 · M`. Parse and retain
       `/photos/{photo.id}` as a route pattern (not just a display string);
       validate duplicate/ambiguous routes; feed the router (RT-23).
@@ -648,8 +647,11 @@ cannot drift again (P0-11/P0-12).
       renders, dropped by `refresh`. Remaining: key by `(capability, address, accept)`, dedupe
       concurrent fetches, stale-while-revalidate, ETag/If-None-Match,
       disk bounds with eviction.
-- [ ] **NET-03 · Retry & backoff** — `P1 · M`. Bounded exponential
-      backoff; cancel on navigation; surface the final `Reason` plainly.
+- [ ] **NET-03 · Retry & backoff** — `P1 · M`. ◐ **safe-GET retries shipped
+      (M1):** 3 attempts, 50→100 ms exponential backoff, only for transient
+      statuses (408/425/429/5xx) and transport failures; the final failure is
+      the same plain sentence. `POST` never auto-retries (NET-04 owns replay).
+      Remaining: configurable policy, `Retry-After`, cancellation on nav.
 - [ ] **NET-04 · Offline queue & optimistic mutations** — `P1 · L`. Queue
       `post` while offline, replay on reconnect, reconcile responses;
       `on tap: posts add draft, sync` semantics.
@@ -670,8 +672,8 @@ cannot drift again (P0-11/P0-12).
       the declared `kind`; a mismatch is a `failed` resource with a plain
       sentence naming the field, never a crash. Fixes TS's erased-types
       hole (Doc 04 F10).
-- [ ] **NET-10 · Fixtures & tests** — `P1 · M`. Local HTTP server in
-      tests, no external network in CI, sample mode for the preview.
+- [x] **NET-10 · Fixtures & tests** — `P1 · M`. Local HTTP server in tests,
+      no external network in CI, sidecar sample mode in the preview.
 - [ ] **NET-11 · Network inspector** — `P2 · M`. Looking Glass panel for
       each resource: state, cache age, retries, bytes, last error.
 - [ ] **NET-12 · Auth as capability** — `P2 · M`. Token handles the program
@@ -1277,12 +1279,16 @@ submit; themes change pixels; `keep` migrates; a11y tree is complete;
 - [x] Example 04 send and example 06 submit run their actions and take the
       honest offline failure branch; example 08's `cart add … then show toast`
       is parsed/executed (its fixture-level `cart`/`Chair` gaps are separate).
+
+**M1 tranche 2 — ✅ resources, cache, refresh, retry (2026-10-31):**
 - [x] Resource memory cache + `refresh` + honest absolute-URL failure
       (`NET-02` core, `NET-05` ready/failed, `NET-06`), with `ErrorBox retry`
       dispatching a refresh.
-- [ ] Retry/backoff (`NET-03`), streaming `from live` (`NET-07`), cache
-      eviction/ETag (`NET-02` remainder), headers/query builder (`NET-08`
-      remainder), success page in example 06.
+- [x] Bounded retry/backoff for safe GETs (`NET-03` core): 3 attempts on
+      transient statuses/transport errors; POST is never replayed.
+- [ ] Streaming `from live` (`NET-07`), configurable retry/`Retry-After`
+      (`NET-03` remainder), cache eviction/ETag (`NET-02` remainder),
+      headers/query builder (`NET-08` remainder), success page in example 06.
 
 **Milestone M2 — "competitive engine" (2–3 months).**
 Rust slices 3–4 (`RS-01…05,09`), Flow completion (`LAY-06…14`),

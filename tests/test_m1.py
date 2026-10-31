@@ -13,6 +13,8 @@ from plainlang.render import App
 
 class _Handler(BaseHTTPRequestHandler):
     requests = 0
+    flaky_hits = 0
+    post_flaky_hits = 0
 
     def log_message(self, fmt, *args):
         pass
@@ -29,9 +31,18 @@ class _Handler(BaseHTTPRequestHandler):
         type(self).requests += 1
         if self.path == "/data":
             return self._json({"name": "Ada", "role": "engineer"})
+        if self.path == "/flaky":
+            type(self).flaky_hits += 1
+            if type(self).flaky_hits < 3:
+                return self._json({"_error": "try later"}, 503)
+            return self._json({"name": "Ada"})
         return self._json({"_error": "not found"}, 404)
 
     def do_POST(self):
+        if self.path == "/flaky-post":
+            type(self).post_flaky_hits += 1
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            return self._json({"_error": "try later"}, 503)
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length)
         try:
@@ -96,6 +107,41 @@ class TestM1Requests(unittest.TestCase):
         self.assertEqual(app.runtime.scopes["page:Home"].state["got"], "Ada")
         self.assertEqual(app.runtime.last_request["method"], "POST")
         self.assertEqual(app.runtime.last_request["body"], {"name": "Ada"})
+
+    def test_get_retries_transient_failures(self):
+        _Handler.flaky_hits = 0
+        app = App(f'''page Home at "/":
+  got = "loading"
+  to load:
+    result = fetch "{self.base}/flaky"
+    when result:
+      is ok value: got = value.name
+      is failed why: got = why as sentence
+  column:
+    button "Load" on tap load
+    text "{{got}}"
+''')
+        self.tap_button(app)
+        self.assertEqual(app.runtime.scopes["page:Home"].state["got"], "Ada")
+        self.assertEqual(_Handler.flaky_hits, 3)
+
+    def test_post_is_not_retried(self):
+        # A blind POST replay can duplicate a write; offline queueing is NET-04.
+        _Handler.post_flaky_hits = 0
+        app = App(f'''page Home at "/":
+  got = "loading"
+  to save:
+    result = post "{self.base}/flaky-post" body "x"
+    when result:
+      is ok value: got = "saved"
+      is failed why: got = why as sentence
+  column:
+    button "Save" on tap save
+''')
+        self.tap_button(app)
+        self.assertEqual(app.runtime.scopes["page:Home"].state["got"],
+                         "server 503")
+        self.assertEqual(_Handler.post_flaky_hits, 1)
 
     def test_fixture_success_can_navigate(self):
         src = '''page Home at "/":

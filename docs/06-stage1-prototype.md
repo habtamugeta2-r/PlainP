@@ -37,7 +37,7 @@ Doc 03 (spec amendment) or in §5 below.
 ./plain render examples/00-hello-world.plain --out hello.svg
 ./plain run    examples/01-counter.plain        # http://localhost:8000 — click +1
 ./plain a11y   examples/01-counter.plain        # derived accessibility tree
-make test                                       # 88 tests, <1.7s
+make test                                       # 90 tests, <2s
 ```
 
 The `run` preview shows the app, its full source, the derived a11y tree and
@@ -102,9 +102,10 @@ PL lines / scene nodes / SVG bytes / build ms — currently **9/9 render,
 the number).
 
 **Still deferred (render raises `UnsupportedYet` naming its stage):**
-retry/backoff, streaming `from live`, request headers/query builders,
-animation/springs + page transitions (declared, ignored), gestures beyond
-tap, themes as author data (built-in palette), `shared sync` CRDTs,
+a configurable retry policy, streaming `from live`, request headers/query
+builders, animation/springs + page transitions (declared, ignored),
+gestures beyond tap, themes as author data (built-in palette), `shared sync`
+CRDTs,
 scroll viewport culling, HarfBuzz shaping/wrapping polish, non-`ErrorBox`
 stdlib components, the Rust/GPU production engine (ADR-1/5 — §7).
 
@@ -161,8 +162,10 @@ Still open: #4 shared-element `id` retention (parsed; animation pending).
 `theme` / `use` are parsed and preserved but not applied; `transition` swaps
 instantly; only `tap`, `change`, and `submit` are dispatched (other valid
 gestures raise `UnsupportedYet` if fired); `refresh x` forces one refetch
-(no polling/backoff yet); `ErrorBox … retry refresh x` dispatches that same
-refresh on tap; text metrics remain the deterministic approximation.
+(no polling yet); `ErrorBox … retry refresh x` dispatches that same refresh
+on tap. Safe GETs (`fetch` and resources) retry transient failures three
+times with 50→100 ms backoff; `POST` never auto-retries, so a write cannot
+be silently duplicated. Text metrics remain the deterministic approximation.
 Resources are cached in memory per `(scope, name, resolved address)`; a
 resource over real http(s) is fetched on first use and reused until
 `refresh`. `post` / `fetch` execute through a request seam: sidecar keys
@@ -196,8 +199,8 @@ silent runtime fallback.
 
 ## 7. Next
 
-**Remaining oracle work:** retry/backoff + streaming behind the existing
-resource seam (NET-03/07); animation timing/springs in the preview;
+**Remaining oracle work:** configurable retry policy + streaming behind the
+existing resource seam (NET-03/07); animation timing/springs in the preview;
 `shared sync` sketch; themes as data; scroll culling; LSP.
 
 ## 8. Rust port status (production path, ADR-1)

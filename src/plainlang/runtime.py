@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -669,8 +670,24 @@ def _url_matches(pattern: str, url: str) -> bool:
             == url.rstrip("/").rsplit("/", 1)[-1])
 
 
+_HTTP_ATTEMPTS = 3
+_HTTP_BACKOFF = 0.05  # seconds; doubles after each failed safe request
+
+
+def _retryable_status(code: int) -> bool:
+    return code in (408, 425, 429) or 500 <= code <= 599
+
+
 def _http_request(method: str, url: str, body, body_kind: str,
-                  line_no=None):
+                  line_no=None, retries: bool | None = None):
+    """One HTTP exchange. Safe methods retry transient failures.
+
+    `GET`/`HEAD` are idempotent, so they get bounded exponential backoff
+    (3 attempts, 50 ms then 100 ms). `POST` never retries here: a replay can
+    duplicate a write, and offline queueing is a separate primitive (NET-04).
+    """
+    if retries is None:
+        retries = method in ("GET", "HEAD")
     data = None
     headers = {"Accept": "application/json"}
     if body is not None:
@@ -683,21 +700,35 @@ def _http_request(method: str, url: str, body, body_kind: str,
             headers["Content-Type"] = "text/plain; charset=utf-8"
     req = urllib.request.Request(url, data=data, headers=headers,
                                  method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read()
-            ctype = (resp.headers.get("Content-Type") or "").lower()
-            if "json" in ctype:
-                return ("ok", json.loads(raw.decode("utf-8")))
-            return ("ok", raw.decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        return ("failed", f"server {e.code}")
-    except urllib.error.URLError as e:
-        return ("failed", f"offline: {getattr(e, 'reason', e)}")
-    except (TimeoutError, OSError) as e:
-        return ("failed", f"offline: {e}")
-    except ValueError as e:  # invalid JSON from the server
-        return ("failed", f"bad response: {e}")
+    attempts = _HTTP_ATTEMPTS if retries else 1
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read()
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                if "json" in ctype:
+                    return ("ok", json.loads(raw.decode("utf-8")))
+                return ("ok", raw.decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if attempt + 1 < attempts and _retryable_status(e.code):
+                e.close()
+                time.sleep(_HTTP_BACKOFF * (2 ** attempt))
+                continue
+            e.close()
+            return ("failed", f"server {e.code}")
+        except urllib.error.URLError as e:
+            if attempt + 1 < attempts:
+                time.sleep(_HTTP_BACKOFF * (2 ** attempt))
+                continue
+            return ("failed", f"offline: {getattr(e, 'reason', e)}")
+        except (TimeoutError, OSError) as e:
+            if attempt + 1 < attempts:
+                time.sleep(_HTTP_BACKOFF * (2 ** attempt))
+                continue
+            return ("failed", f"offline: {e}")
+        except ValueError as e:  # invalid JSON from the server
+            return ("failed", f"bad response: {e}")
+    return ("failed", "offline: request failed")  # defensive; loop returns
 
 
 def _match_when(subject, when_node):
