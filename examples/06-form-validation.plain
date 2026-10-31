@@ -1,0 +1,60 @@
+# 06 — Form with validation
+# Tests: field validation as derivations, submit gating, server errors
+#        (Doc 03 §6.1–6.2, §6.7).
+# Compare: web forms are a library genre (Formik/React-Hook-Form + a schema
+#          validator like Zod, ~100+ lines for this). PL: each rule is an
+#          `is` line that produces a sentence or `nothing`; the form is
+#          valid when every sentence is `nothing`. Errors appear next to
+#          fields and are announced automatically (a11y derivation).
+
+needs network api.example.com
+
+page SignUp at "/signup":
+  name = ""
+  email = ""
+  password = ""
+  touched = no                      # show errors after first submit attempt
+  sending = no
+  server-problem = nothing
+
+  name-error is "Please enter your name." if name trimmed is empty otherwise nothing
+  email-error is "That email doesn't look right." if email lacks "@" or email lacks "." otherwise nothing
+  password-error is "Use at least 8 characters." if password length < 8 otherwise nothing
+  ready is name-error is nothing and email-error is nothing and password-error is nothing
+
+  to submit:
+    touched = yes
+    if not ready: return
+    sending = yes
+    result = post "/api/signup" with name, email, password
+    sending = no
+    when result:
+      is ok account: go to Welcome(account)
+      is failed why: server-problem = why as sentence
+
+  column gap 14 padding 24 width fill max 420 center-self:
+    text "Create your account" size 26 bold
+
+    Field "Name" error name-error if touched:
+      input bind name placeholder "Ada Lovelace" autocomplete name
+    Field "Email" error email-error if touched:
+      input bind email placeholder "ada@example.com" kind email autocomplete email
+    Field "Password" error password-error if touched:
+      input bind password placeholder "8+ characters" secret autocomplete new-password
+
+    if server-problem exists:
+      text server-problem color danger background danger-soft corners 8 padding 10 14
+
+    button "Creating…" if sending otherwise "Create account"
+      primary width fill disabled if sending on tap submit
+    text "Already have an account? Sign in" color accent center
+      on tap: go to SignIn
+
+# A labeled field with an optional error line — the pattern every form
+# library exists to provide, in 6 lines of the base language.
+component Field(label, error, children):
+  column gap 6:
+    text label size 13 bold color muted
+    children
+    if error exists:
+      text error color danger size 13

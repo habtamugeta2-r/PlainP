@@ -1,0 +1,75 @@
+# 02 — Todo list: add / remove / filter / persist
+# Tests: state, lists, two-way binding, derived filters, `keep` (Doc 03 §6).
+# Compare (add+remove+filter+persist, honest production versions):
+#   React+TS   ~140 lines + state/storage glue, 2-3 files
+#   Svelte     ~80 lines, 1 file (+ CSS)
+#   Flutter    ~160 lines + state package decision
+#   SwiftUI    ~90 lines + @AppStorage encoding dance
+#   PL         ~40 lines below, 1 file, 0 dependencies. A11y: automatic
+#              (Doc 02 §1.4) — no aria/role/semantics code exists here.
+
+needs storage
+
+kind Task:
+  title: Text
+  done: Bool = no
+
+page Home at "/":
+  tasks: List of Task = []
+  keep tasks
+  draft = ""
+  show = "all"                                # all | open | done
+  visible is tasks where show is "all"
+                     or (show is "open" and not done)
+                     or (show is "done" and done)
+  remaining is tasks count where not done
+
+  to add-task:
+    if draft trimmed is empty: return
+    tasks add Task(title: draft trimmed)
+    draft = ""
+
+  column gap 16 padding 24 width fill max 560 center-self:
+    text "My tasks" size 28 bold
+
+    row gap 8:
+      input bind draft placeholder "What needs doing?" grow
+        on submit add-task
+      button "Add" on tap add-task
+
+    row gap 8:
+      for option in ["all", "open", "done"]:
+        button option capitalize
+          look chip-selected if show is option otherwise look chip
+          on tap: show = option
+
+    scroll grow:
+      column gap 8:
+        for task in visible:
+          row gap 12 align center padding 12 look card enter fade-up:
+            toggle bind task.done
+            text task.title grow strike if task.done color muted if task.done
+            button "Remove" plain on tap: tasks remove task
+            on swipe-start: tasks remove task
+
+    if tasks is empty:
+      text "Nothing here yet. Add your first task above." color muted
+    otherwise:
+      text "{remaining} to go" color muted size 14
+
+look card:
+  background surface
+  corners 12
+  shadow soft
+
+look chip:
+  background surface
+  corners 999
+  padding 6 14
+
+look chip-selected:
+  background accent
+  color on-accent
+  corners 999
+  padding 6 14
+  bold

@@ -1,0 +1,55 @@
+# 08 — 3D product viewer / configurator
+# Tests: scene3d as a first-class node in the 2D tree, shared state between
+#        3D scene and 2D commerce UI (Doc 02 §3.4 — no engine seam).
+# Compare: web = three.js scene graph in JS + React state bridged by hand
+#          (react-three-fiber helps; still two worlds, ~150 lines);
+#          native = SceneKit/RealityKit + separate 2D UI state sync.
+# PL: one `=` for color drives the model's material AND the selected
+#     swatch AND the price line, because there is one tree and one
+#     reactivity system. Rotate = a gesture on a node, like any other.
+
+kind Finish:
+  name: Text
+  tint: Color
+  extra: Money
+
+page Configurator at "/chair":
+  finishes = [Finish("Oak", #B08968, 0), Finish("Walnut", #5C4033, 40), Finish("Matte black", #232323, 25)]
+  finish = finishes first
+  cushion = yes
+  spin = 0deg
+  price is 299 + finish.extra + (35 if cushion otherwise 0)
+
+  row height fill:
+    scene3d grow background paper-gradient:
+      camera at 0, 1.2, 3 look-at 0, 0.6, 0
+      light sun angle 40deg soft-shadows
+      model3d "/models/chair.glb" rotate-y spin animate spring gentle
+        material wood color finish.tint
+        part cushion visible if cushion
+      on drag-x value: spin += value
+      on scroll value: camera zoom-by value clamped 2 to 6
+
+    column gap 18 padding 28 width 340 background surface:
+      text "Plain Chair" size 28 bold
+      text "Drag to spin. Scroll to zoom." color muted size 13
+
+      text "Finish" bold size 13 color muted
+      row gap 10:
+        for option in finishes:
+          box size 36 shape circle background option.tint
+            ring accent width 3 if finish is option
+            label option.name
+            on tap: finish = option
+
+      row spread between align center:
+        text "Seat cushion (+35)"
+        toggle bind cushion
+
+      divider
+      row spread between align center:
+        text "Total" bold
+        text price as money size 22 bold
+      button "Add to cart — {finish.name}" primary width fill
+        on tap: cart add Chair(finish, cushion) then show toast "Added ✓"
+      text "Free returns for 60 days." color muted size 12 center

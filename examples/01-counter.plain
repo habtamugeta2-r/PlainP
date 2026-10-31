@@ -1,0 +1,21 @@
+# 01 — Counter
+# Tests: reactivity (`=` state, `is` derived), events (Doc 03 §6.1–6.2).
+# Compare: React 6 lines + import + JSX rules; Flutter ~12 lines / 2 classes;
+#          SwiftUI 5 lines + @State to explain. PL below: 10 lines, 0 new
+#          concepts beyond "a variable". Read it aloud — that's the test.
+# See also: docs/04-syntax-showdown.md Feature 1.
+
+component Counter:
+  count = 0
+  mood is "getting warm" if count >= 10 otherwise "just starting"
+
+  column gap 16 padding 24 align center:
+    text "Count: {count}" size 32 bold
+    text mood color muted
+    row gap 8:
+      button "−1" on tap: count -= 1
+      button "Reset" plain on tap: count = 0
+      button "+1" on tap: count += 1
+
+page Home at "/":
+  Counter
