@@ -115,8 +115,10 @@ def _check_block(stmts, program, errors, visual, actions=frozenset(), owner_name
                 # the first tap (Doc 03 §10).
                 allowed = {"go", "return", "transition", "refresh", "show",
                            "post", "fetch", "then", "together", "wait"}
-                if head and head not in allowed and not head.startswith(
-                        ("add", "remove")):
+                words = stmt.text.split()
+                is_list_op = len(words) > 1 and words[1] in ("add", "remove")
+                if (head and head not in allowed and not is_list_op
+                        and not head.startswith(("add", "remove"))):
                     close = difflib.get_close_matches(head, NODE_KINDS, n=1,
                                                       cutoff=0.65)
                     if close:

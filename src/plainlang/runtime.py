@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from .ast_nodes import (
@@ -118,6 +120,8 @@ class Runtime:
         self.providers = providers or {}
         self.persist_path = Path(persist_path) if persist_path else None
         self._store: dict | None = None
+        self.toasts: list[str] = []
+        self.last_request: dict | None = None
 
     # -- persistence (`keep`) ---------------------------------------------
     @property
@@ -277,14 +281,9 @@ class Runtime:
         self._preflight_src(text, line_no, col, text)
 
     def _preflight_src(self, text: str, line_no, col=None, raw=""):
-        if re.match(r"^(post|fetch)\b", text):
-            raise UnsupportedYet("`post` (network calls)", "Stage 3",
-                                 line_no, raw or text, col=col,
-                                 length=len(text.split()[0]))
-        if text.startswith("show toast") or _has_top_level_word(text, "then"):
-            raise UnsupportedYet("toasts / `then` chains", "Stage 3",
-                                 line_no, raw or text, col=col,
-                                 length=max(1, len(text.split()[0])))
+        # `post`/`fetch`/`then`/`show toast` execute for real as of M1.
+        # `refresh` still has no resource-cache to refresh (NET-06).
+        pass
 
     def _preflight_stmt(self, stmt):
         if isinstance(stmt, AssignStmt):
@@ -320,7 +319,114 @@ class Runtime:
             return
         self.exec_stmt(sc, RawStmt(text, line_no or 0), extra)
 
+    # -- network / request results (M1) ------------------------------------
+    @staticmethod
+    def _is_request(src: str) -> bool:
+        return bool(re.match(r"^(post|fetch)\b", (src or "").strip()))
+
+    def _write_value(self, sc, target: str, value, extra):
+        parts = target.split(".")
+        if len(parts) == 1:
+            root = parts[0]
+            if root in self.shared and root not in sc.state:
+                self.shared[root] = value
+            else:
+                sc.state[root] = value
+            return
+        env = self.env_for(sc, extra)
+        obj = env.get(parts[0])
+        if not isinstance(obj, dict):
+            raise PlainError(f"`{parts[0]}` isn't a record, so it has no "
+                             f"parts to change.")
+        obj[parts[-1]] = value
+
+    def _request(self, src: str, sc: Scope, extra, line_no):
+        """Evaluate `post URL [with … | body …]` / `fetch URL`.
+
+        Result shape is Doc 03 §7.4: `("ok", value)` or
+        `("failed", sentence)`. Relative URLs use sidecar fixtures keyed
+        `"POST /path"` / `"FETCH /path"`; without one the prototype reports
+        an honest offline failure instead of pretending. Absolute http(s)
+        URLs use the stdlib transport (timeout, JSON when announced).
+        """
+        text = (src or "").strip()
+        m = re.match(r"^(post|fetch)\s+(.+)$", text)
+        if not m:
+            raise PlainError(f"I couldn't read this request: `{text}`.",
+                             line_no=line_no)
+        method = m.group(1).lower()
+        rest = m.group(2).strip()
+        url_src, rest = _take_url_source(rest, line_no)
+        env = self.env_for(sc, extra)
+        url = evaluate_text(url_src, env, self.program.kinds, line_no)
+        if not isinstance(url, str) or not url:
+            raise PlainError("A request needs an address (a string).",
+                             line_no=line_no, line_text=text,
+                             hint='post "/api/signup"')
+        body = None
+        body_kind = "empty"
+        rest = rest.strip()
+        if rest.startswith("with "):
+            arg_srcs = _split_args(rest[len("with "):])
+            values = [evaluate_text(a.strip(), env, self.program.kinds, line_no)
+                      for a in arg_srcs]
+            if all(re.match(r"^[A-Za-z_][\w-]*(?:\.[\w-]+)*$", a.strip())
+                   for a in arg_srcs):
+                body = {a.strip().split(".")[-1]: v
+                        for a, v in zip(arg_srcs, values)}
+            else:
+                body = values
+            body_kind = "json"
+        elif rest.startswith("body "):
+            body = evaluate_text(rest[len("body "):], env,
+                                 self.program.kinds, line_no)
+            body_kind = "raw" if isinstance(body, (str, bytes)) else "json"
+        elif rest:
+            raise PlainError(
+                f"I don't know how to send `{rest}` with a request.",
+                line_no=line_no, line_text=text,
+                hint="use `with value, value` or `body text`")
+
+        method_upper = "POST" if method == "post" else "GET"
+        fixture_method = "POST" if method == "post" else "FETCH"
+        fixture = self._fixture_response(fixture_method, url)
+        if fixture is not None:
+            result = fixture
+        elif url.startswith(("http://", "https://")):
+            result = _http_request(method_upper, url, body, body_kind, line_no)
+        else:
+            result = ("failed", f"offline: no transport for {url} "
+                                f"in this prototype yet")
+        self.last_request = {"method": method_upper, "url": url,
+                             "body": body, "result": result,
+                             "line": line_no}
+        return result
+
+    def _fixture_response(self, method: str, url: str):
+        prefix = method + " "
+        for key, val in self.providers.items():
+            if not isinstance(key, str) or not key.upper().startswith(prefix):
+                continue
+            pattern = key[len(prefix):]
+            if not _url_matches(pattern, url):
+                continue
+            if isinstance(val, dict) and val.get("_failed"):
+                return ("failed", str(val["_failed"]))
+            if isinstance(val, dict) and "_ok" in val:
+                return ("ok", val["_ok"])
+            return ("ok", val)
+        return None
+
     def _assign(self, sc, target, op, expr_src, extra, line_no):
+        if op == "=" and self._is_request(expr_src):
+            value = self._request(expr_src, sc, extra, line_no)
+            root = target.split(".")[0]
+            if root not in sc.state and root not in self.shared and extra is not None:
+                extra[target] = value
+            else:
+                self._write_value(sc, target, value, extra)
+            self.save_kept()
+            return
         env = self.env_for(sc, extra)
         root = target.split(".")[0]
         # Write to shared if this name lives there, else instance state.
@@ -355,13 +461,27 @@ class Runtime:
         if isinstance(stmt, AssignStmt):
             # new names inside actions are locals unless known state/shared
             root = stmt.target.split(".")[0]
-            if stmt.op == "=" and root not in sc.state and root not in self.shared \
-                    and extra is not None:
+            if (stmt.op == "=" and root not in sc.state
+                    and root not in self.shared and extra is not None
+                    and not self._is_request(stmt.expr)):
                 env = self.env_for(sc, extra)
                 from .expr import evaluate_text as ev
                 extra[stmt.target] = ev(stmt.expr, env, self.program.kinds, stmt.line_no)
                 return
             self._assign(sc, stmt.target, stmt.op, stmt.expr, extra, stmt.line_no)
+            return
+        if isinstance(stmt, WhenNode):
+            env = self.env_for(sc, extra)
+            subject = evaluate_text(stmt.subject, env, self.program.kinds,
+                                    stmt.line_no)
+            branch, payload_name, payload = _match_when(subject, stmt)
+            if branch is None:
+                return
+            bout = dict(extra or {})
+            if payload_name:
+                bout[payload_name] = payload
+            for s in branch.body:
+                self.exec_stmt(sc, s, bout)
             return
         if isinstance(stmt, IfNode):
             env = self.env_for(sc, extra)
@@ -382,6 +502,11 @@ class Runtime:
 
     def _exec_raw(self, sc: Scope, stmt: RawStmt, extra):
         text = stmt.text.strip()
+        parts = _split_top_level_word(text, "then")
+        if len(parts) > 1:
+            for part in parts:
+                self.exec_text(sc, part, extra, stmt.line_no)
+            return
         if text == "return":
             raise _Return()
         # list ops: `tasks add X` / `tasks remove X`
@@ -419,8 +544,15 @@ class Runtime:
             if isinstance(name, dict):
                 name = name.get("page") or name.get("title")
             raise Navigate(str(name), [])
-        if text.startswith("show toast") or " then " in text:
-            raise UnsupportedYet("toasts / `then` chains", "Stage 3", stmt.line_no, text)
+        if text.startswith("show toast"):
+            msg = evaluate_text(text[len("show toast"):].strip(),
+                                self.env_for(sc, extra), self.program.kinds,
+                                stmt.line_no)
+            self.toasts.append(str(msg))
+            return
+        if self._is_request(text):
+            self._request(text, sc, extra, stmt.line_no)
+            return
         if re.match(r"^[\w-]+(\(.*\))?$", text):
             self.call_action(sc, text, extra, stmt.line_no)
             return
@@ -431,6 +563,123 @@ class Runtime:
         self.scopes.clear()
         self.shared.clear()
         self._shared_ready = False
+        self.toasts.clear()
+        self.last_request = None
+
+
+def _take_url_source(rest: str, line_no=None) -> tuple[str, str]:
+    """First request argument: a quoted string or one bare token."""
+    if not rest:
+        raise PlainError("A request needs an address.", line_no=line_no)
+    if rest[0] == '"':
+        out, i, escaped = ['"'], 1, False
+        while i < len(rest):
+            ch = rest[i]
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                return "".join(out), rest[i + 1:]
+            i += 1
+        raise PlainError("This string never closes.", line_no=line_no,
+                         line_text=rest)
+    parts = rest.split(None, 1)
+    return parts[0], (parts[1] if len(parts) > 1 else "")
+
+
+def _url_matches(pattern: str, url: str) -> bool:
+    collapse = lambda s: re.sub(r"\{[^}]*\}", "*", str(s))
+    return (pattern == url or collapse(pattern) == collapse(url)
+            or pattern.rstrip("/").rsplit("/", 1)[-1]
+            == url.rstrip("/").rsplit("/", 1)[-1])
+
+
+def _http_request(method: str, url: str, body, body_kind: str,
+                  line_no=None):
+    data = None
+    headers = {"Accept": "application/json"}
+    if body is not None:
+        if body_kind == "json":
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        else:
+            data = (body if isinstance(body, bytes)
+                    else str(body).encode("utf-8"))
+            headers["Content-Type"] = "text/plain; charset=utf-8"
+    req = urllib.request.Request(url, data=data, headers=headers,
+                                 method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            raw = resp.read()
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if "json" in ctype:
+                return ("ok", json.loads(raw.decode("utf-8")))
+            return ("ok", raw.decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return ("failed", f"server {e.code}")
+    except urllib.error.URLError as e:
+        return ("failed", f"offline: {getattr(e, 'reason', e)}")
+    except (TimeoutError, OSError) as e:
+        return ("failed", f"offline: {e}")
+    except ValueError as e:  # invalid JSON from the server
+        return ("failed", f"bad response: {e}")
+
+
+def _match_when(subject, when_node):
+    """Match a result/resource tuple against `is` branches."""
+    if isinstance(subject, tuple) and len(subject) == 2:
+        tag, payload = subject
+    else:
+        tag, payload = "ready", subject
+    for br in when_node.branches:
+        parts = br.pattern.split()
+        if parts and parts[0] == tag:
+            return br, (parts[1] if len(parts) > 1 else None), payload
+    return None, None, None
+
+
+def _split_top_level_word(text: str, word: str) -> list[str]:
+    """Split `a then b` outside strings/brackets. `then` in data is safe."""
+    parts, cur = [], []
+    depth = 0
+    in_str = False
+    escaped = False
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if in_str:
+            cur.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            cur.append(ch)
+            i += 1
+            continue
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if (depth == 0 and text.startswith(word, i)
+                and (i == 0 or text[i - 1] in " \t")
+                and (i + len(word) == len(text)
+                     or text[i + len(word)] in " \t")):
+            parts.append("".join(cur).strip())
+            cur = []
+            i += len(word)
+            continue
+        cur.append(ch)
+        i += 1
+    parts.append("".join(cur).strip())
+    return [p for p in parts if p]
 
 
 def _split_args(src: str) -> list[str]:

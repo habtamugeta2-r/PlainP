@@ -16,12 +16,14 @@
 ## TL;DR — the six things that matter most
 
 > **M0 status (2026-10-31): ✅ complete.** All twelve P0 items below are
-> implemented and covered by tests: the suite is now **76 tests**, `./plain
+> implemented and covered by tests: the suite is now **83 tests**, `./plain
 > check` stays green with visible notes for future syntax, `./plain fmt
 > --check` is clean, `./plain validate` enforces committed node/SVG floors,
-> and the preview has per-browser sessions. The Stage-3 network boundary is
-> still deliberate: `post`/`fetch`/toasts/gestures raise `UnsupportedYet`
-> before mutating anything.
+> and the preview has per-browser sessions. **M1 has started:** `post` /
+> `fetch`, `when` results, `then` chains and `show toast` now execute; requests
+> use sidecar fixtures or a real local HTTP transport and report offline as a
+> plain `failed` sentence. Caching, retry, streaming and non-tap gestures are
+> still deliberately absent (and visibly noted).
 
 1. **The prototype is real.** All 9 examples parse, check, render and
    34 tests passed (76 after M0). The architecture claims are unusually well matched by
@@ -190,8 +192,10 @@ Verified, with reproductions:
 `P0` · `M` · **⚠ bug** · `scene.py:238–245`, `scene.py:444`, `render.py:107`
 
 **Status:** ✅ verified done — M0, 2026-10-31 (code + tests).
-**Residual:** submit navigation waits for NET-01…08; slot scopes, input,
-toggle, button and scoped derivations are covered by `tests/test_p0.py`.
+**Residual:** submit runs end-to-end and reports the offline failure branch
+(no fixture/transport); successful navigation is covered with a fixture in
+`tests/test_m1.py`. Slot scopes, input, toggle, button and scoped derivations
+are covered by `tests/test_p0.py`.
 
 * **Now:** `_expand_component` builds slot children with
   `call_scope_path(caller_sc)`, which returns `""` because `_path_hint` is
@@ -398,7 +402,7 @@ signed/auth token; SEC-07/SRV-12 decide the hosted trust model.
 
 ```text
 $ PYTHONPATH=src python3 -m unittest discover -s tests
-Ran 76 tests in 0.7s — OK
+Ran 83 tests in 0.7s — OK
 
 $ ./plain check examples/*.plain
 9/9 OK + honest notes (gestures/transition/theme/use are declared, not faked)
@@ -413,7 +417,7 @@ $ cargo --version
 not installed in this sandbox; CI remains the Rust compiler of record
 ```
 
-**Code volume (actual after M0):** Python package 4 575 LOC; tests 969 LOC;
+**Code volume (actual after M0/M1 tranche 1):** Python package 4 865 LOC; tests 1 165 LOC;
 Rust 2 414 LOC (15 `#[test]`s). Docs and CI assert the test count so it
 cannot drift again (P0-11/P0-12).
 
@@ -1246,7 +1250,7 @@ Exit: example 06's fields are typeable end-to-end (submit stops at the
 documented Stage-3 network gate, untouched state); nothing is silently
 ignored; `fmt --check` and CI mean something; docs tell the truth.
 
-**Milestone M1 — "Stage 3 semantics complete" (4–6 weeks).**
+**Milestone M1 — "Stage 3 semantics complete" (4–6 weeks).** `◐ in progress`
 Units/types (`EX-01…07`), component binding (`FE-05`), themes (`FE-13`),
 `use` (`FE-12`), scoped derivations (`UI-06`), real resources
 (`NET-01…07`), results/`post` (`EX-05`, `NET-08`), keyed lists (`RT-03`),
@@ -1256,6 +1260,19 @@ resolution (`CHK-02`), a11y basics (`A11Y-01…03,05`), layout constraints
 Exit: all 9 examples run their *actions*, including chat send and form
 submit; themes change pixels; `keep` migrates; a11y tree is complete;
 `plain check` catches action errors.
+
+**M1 tranche 1 — ✅ request/action seam (2026-10-31):**
+- [x] `post` / `fetch` with `with value, …` and `body text`; Result tuples
+      `("ok", value)` / `("failed", sentence)`.
+- [x] `when result:` in actions, including payload binding (`is ok saved:`).
+- [x] `then` chains and `show toast` (runtime toast list + preview banner).
+- [x] Fixture responses keyed `"POST /path"` / `"FETCH /path"`, plus real
+      stdlib HTTP against a local test server (no external network in CI).
+- [x] Example 04 send and example 06 submit run their actions and take the
+      honest offline failure branch; example 08's `cart add … then show toast`
+      is parsed/executed (its fixture-level `cart`/`Chair` gaps are separate).
+- [ ] Cache / retry / streaming (`NET-02/03/07`), `refresh` (`NET-06`),
+      headers/query builder (`NET-08` remainder), success page in example 06.
 
 **Milestone M2 — "competitive engine" (2–3 months).**
 Rust slices 3–4 (`RS-01…05,09`), Flow completion (`LAY-06…14`),
