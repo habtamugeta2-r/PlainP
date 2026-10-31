@@ -550,7 +550,7 @@ fn check_node(node: &Node, program: &Program, errors: &mut Vec<PlainError>, acti
         match ch {
             Stmt::Node(n) => check_node(n, program, errors, actions),
             Stmt::If { .. } | Stmt::For { .. } | Stmt::When { .. } | Stmt::Raw { .. } => {
-                check_block(std::slice::from_ref(ch), program, errors, actions)
+                check_block(std::slice::from_ref(ch), program, errors, true, actions)
             }
             _ => {}
         }

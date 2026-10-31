@@ -24,7 +24,7 @@
 Ordered by severity and dependency chain. Every item maps 1:1 to an open Linear issue in **PlainP — PLAIN Platform & PL**.
 
 ### Wave 1B · Architectural Separation (`ADR-9`) & Python–Rust Lockstep Gate
-- [ ] **Architecture Track (`ADR-9`) · Separate PL Core language fundamentals from Clear atoms (~8 primitives) and `std/ui.plain` prelude** (`docs/05` ADR-9)
+- [ ] **`HAB-85` · [P2 High] Separate PL Core language fundamentals from Clear atoms (~8 primitives) and `std/ui.plain` prelude** (`ADR-9`, `docs/05`)
   - Decouple parser/checker from hardcoded widget lists via two-phase signature resolution, promote two-way `bind` references + typed boolean flags to PL Core, expose interaction/semantic a11y traits on `box`/`text-input`, and author controls (`button`, `toggle`, `divider`, `spacer`, `spinner`, `table`) in `std/ui.plain` shared by Python & Rust.
 - [ ] **`HAB-76` · [P2 High] Bring Rust front-end (`plain-rs` Slice 1–2) up to M0 parity with Python oracle** (`RS-08`, `P0-02/03/08/09`)
   - Add 1-based column spans & carets (`tokens.rs`, `ast.rs`, `errors.rs`), preserve component/page parameter `defaults` (`parser.rs:146`), and emit `PlainWarning` notes (action-body walk & capability checks landed in `HAB-70`).
