@@ -1,4 +1,21 @@
+# Python bytecode & packaging artifacts
 __pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# PLAIN runtime & generated outputs
 out/
-*.pyc
 .plain/
+
+# Rust build artifacts
+rust/target/
+target/

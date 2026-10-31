@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plainlang"
+version = "0.1.0"
+description = "PLAIN (PL + Clear) zero-dependency reference spec-oracle, formatter, Flow layout engine, and live preview server."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/habtamugeta2-r/PlainP"
+Documentation = "https://github.com/habtamugeta2-r/PlainP/tree/main/docs"
+
+[project.scripts]
+plain = "plainlang.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["plainlang*"]

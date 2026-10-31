@@ -557,6 +557,47 @@ class TestP011DocsMatchReality(unittest.TestCase):
         self.assertIn("G-1…G-10", docs)
         self.assertIn("G-10", docs)
 
+    def test_backlog_and_packaging_stay_aligned(self):
+        import tomllib
+        pyproject = tomllib.loads(
+            (ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        self.assertEqual(pyproject["project"]["dependencies"], [])
+        self.assertEqual(pyproject["project"]["scripts"]["plain"],
+                         "plainlang.cli:main")
+
+        todo = (ROOT / "TODO.md").read_text(encoding="utf-8")
+        self.assertLess(len(todo.splitlines()), 400)
+        self.assertIn("docs/07-workstream-backlog.md", todo)
+        self.assertIn("HAB-69", todo)
+
+        backlog = (ROOT / "docs/07-workstream-backlog.md").read_text(encoding="utf-8")
+        ids = set(re.findall(
+            r"\b(?:P0|FE|EX|RT|NET|UI|LAY|H|A11Y|SRV|CLI|CHK|SEC|RS|TST|DOC|PERF|ECO|PLAT)-\d+\b",
+            backlog))
+        self.assertEqual(len(ids), 272)
+        self.assertTrue((ROOT / "docs/README.md").is_file())
+        self.assertTrue((ROOT / "CONTRIBUTING.md").is_file())
+
+    def test_relative_markdown_links_exist(self):
+        checked_docs = [
+            ROOT / "README.md",
+            ROOT / "TODO.md",
+            ROOT / "CONTRIBUTING.md",
+            ROOT / "docs/README.md",
+            ROOT / "examples/README.md",
+        ]
+        link_re = re.compile(r"\[[^\]]+\]\(([^)#]+)(?:#[^)]*)?\)")
+        for doc in checked_docs:
+            text = doc.read_text(encoding="utf-8")
+            for target in link_re.findall(text):
+                if "://" in target or target.startswith("mailto:"):
+                    continue
+                resolved = (doc.parent / target).resolve()
+                self.assertTrue(
+                    resolved.exists(),
+                    f"Broken link {target!r} in {doc.relative_to(ROOT)}",
+                )
+
 
 # ---------------------------------------------------------------- P0-12
 

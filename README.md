@@ -48,6 +48,7 @@ actionable research answer, design decision, or implementation task.
 
 ```
 PLAIN
+├── docs/README.md .................... Reader's guide & index across all specs
 ├── docs/00-phase0-research.md ........ Phase 0 — what current platforms get
 │                                        wrong, and the concrete case for PLAIN
 ├── docs/01-architecture.md ........... Phase 1 — the full decomposition tree:
@@ -61,9 +62,12 @@ PLAIN
 │   ................................... Phase 2 implementation decisions (ADRs),
 │                                        Phase 4 proof-of-concept roadmap,
 │                                        Phase 5 validation: 10 test apps + metrics
-├── docs/06-stage1-prototype.md ....... Stage 1: the RUNNING reference
+├── docs/06-stage1-prototype.md ....... Stage 1–3: the RUNNING reference
 │                                        prototype — what's implemented,
 │                                        grammar decisions, honest gaps
+├── docs/07-workstream-backlog.md ..... Exhaustive 272-item subsystem checklist
+├── TODO.md ........................... Active priority queue (synced w/ Linear)
+├── CONTRIBUTING.md ................... Workflow, invariants & dual-track rules
 ├── examples/ ......................... Canonical .plain programs (the spec
 │                                        made concrete) + LOC comparisons
 ├── src/plainlang/ .................... Reference implementation / spec-oracle
@@ -71,8 +75,9 @@ PLAIN
 ├── rust/ ............................. Production engine port (ADR-1):
 │                                        slices 1–2 (tokens/parser/checker)
 │                                        green in CI — status: Doc 06 §8
-├── tests/ ............................ 92 spec-oracle tests (`make test`)
+├── tests/ ............................ 94 spec-oracle tests (`make test`)
 │                                        + Rust parity tests in rust/tests/
+├── pyproject.toml .................... Zero-dependency Python package metadata
 └── plain ............................. The CLI: `./plain run|check|render|a11y|fmt|validate`
 ```
 
@@ -83,7 +88,7 @@ PLAIN
 ./plain run examples/01-counter.plain           # → http://localhost:8000
 ./plain render examples/00-hello-world.plain --out hello.svg
 ./plain a11y examples/01-counter.plain          # a11y tree, derived free
-make test                                       # 92 tests
+make test                                       # 94 tests
 ```
 
 No install, no dependencies, no build step (Doc 03 §10 honored by the

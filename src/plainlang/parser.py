@@ -488,10 +488,6 @@ class _Parser:
             if t.kind == T.COMMA or t.kind == T.COLON:
                 i += 1
                 continue
-            if t.kind == T.NAME and t.text == "on" and node.kind != "box":
-                ev, i = self._event_from_tokens(toks, i, ln)
-                node.events.append(ev)
-                continue
             if t.kind == T.NAME and t.text == "on":
                 ev, i = self._event_from_tokens(toks, i, ln)
                 node.events.append(ev)
