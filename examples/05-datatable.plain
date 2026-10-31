@@ -1,0 +1,65 @@
+# 05 — Data table: sort + paginate + search
+# Tests: resources, derived pipelines (filter→sort→page as readable
+#        derivations), stdlib table semantics (Doc 03 §6.1, §6.5).
+# Compare: React needs a table library (TanStack Table ~ dozens of config
+#          lines) or hand-rolled sort/page state (~120 lines); Flutter's
+#          DataTable is notoriously rigid. PL: one `table` node + plain
+#          derivations. Sorting/pagination logic reads like the sentence
+#          you'd say to a colleague.
+
+needs network api.example.com
+
+kind Person:
+  name: Text
+  team: Text
+  salary: Money
+
+page People at "/people":
+  people from "/api/people"
+  query = ""
+  sort-by = "name"
+  sort-reversed = no
+  page-number = 1
+  per-page = 20
+
+  to choose-sort(column):
+    if sort-by is column: sort-reversed = not sort-reversed
+    otherwise:
+      sort-by = column
+      sort-reversed = no
+
+  column gap 14 padding 24:
+    row spread between align center:
+      text "People" size 26 bold
+      input bind query placeholder "Search name or team…" width 280
+
+    when people:
+      is loading: spinner
+      is failed why: ErrorBox why retry refresh people
+      is ready everyone:
+        filtered is everyone where name contains query or team contains query
+        ordered is filtered sorted by sort-by reversed if sort-reversed
+        page-count is ceil(ordered count / per-page) at-least 1
+        shown is ordered from (page-number - 1) * per-page take per-page
+
+        table:
+          header:
+            cell "Name" on tap: choose-sort("name")
+            cell "Team" on tap: choose-sort("team")
+            cell "Salary" align end on tap: choose-sort("salary")
+          for person in shown:
+            row:
+              cell person.name
+              cell person.team color muted
+              cell person.salary align end
+
+        if shown is empty:
+          text "No one matches “{query}”." color muted padding 16
+
+        row spread between align center:
+          text "{filtered count} people · page {page-number} of {page-count}" color muted size 13
+          row gap 8:
+            button "Previous" plain disabled if page-number is 1
+              on tap: page-number -= 1
+            button "Next" plain disabled if page-number is page-count
+              on tap: page-number += 1

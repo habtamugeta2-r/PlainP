@@ -1,0 +1,18 @@
+[package]
+name = "plainlang"
+version = "0.1.0"
+edition = "2021"
+description = "PL (Plain Language) — production engine port of the Python spec-oracle (ADR-1). Slice 1: tokens, block tree, parser."
+license = "Apache-2.0"
+
+[lib]
+name = "plainlang"
+path = "src/lib.rs"
+
+[[bin]]
+name = "plain-rs"
+path = "src/main.rs"
+
+# Zero dependencies by design for slice 1 (matches the oracle's stdlib-only
+# rule; crates like wgpu/HarfBuzz arrive with the Clear slices).
+[dependencies]

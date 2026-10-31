@@ -1,0 +1,10 @@
+# 00 — Hello World
+# Run:  plain run 00-hello-world.plain
+# Tests: Stage 1 exit — parse, layout, text, window (Doc 05 Phase 4).
+# Compare: the smallest equivalent web project needs .html + .css + .js(+tooling);
+#          Flutter needs ~25 lines incl. MaterialApp/runApp/Widget. PL: 4 lines.
+
+page Home at "/":
+  column align center spread center padding 24:
+    text "Hello, world." size 40 bold
+    text "This whole app is this file." color muted size 18

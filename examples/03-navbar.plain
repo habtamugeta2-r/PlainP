@@ -1,0 +1,34 @@
+# 03 — Responsive navigation bar
+# Tests: container-aware adaptation WITHOUT media queries (Doc 03 §5.3).
+# Compare: CSS needs breakpoints + a JS hamburger toggle + duplicated markup
+#          (desktop list vs mobile menu). PL: one component; `narrow` refers
+#          to THIS bar's width, so the same Nav works full-width or in a
+#          sidebar — impossible with viewport media queries (Doc 00 A10).
+
+component Nav(links, current):
+  open = no
+
+  row align center spread between padding 16 24 background surface shadow soft:
+    text "Acme" size 20 bold
+
+    if width >= 720:                       # wide bar: inline links
+      row gap 20:
+        for link in links:
+          text link.title bold if link is current color accent if link is current
+            on tap: go to link.page
+    otherwise:                             # narrow bar: menu button
+      button "Menu" plain on tap: open = not open
+
+  if width < 720 and open:
+    column gap 4 padding 12 24 background surface animate spring enter fade-down:
+      for link in links:
+        button link.title plain align start width fill
+          bold if link is current
+          on tap:
+            open = no
+            go to link.page
+
+page Home at "/":
+  column:
+    Nav links [Home-link, Docs-link, About-link] current Home-link
+    text "Resize the window. The bar adapts — no breakpoints were harmed." padding 24

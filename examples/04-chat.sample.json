@@ -1,0 +1,10 @@
+{
+  "page_params": {"room": {"_kind": "Room", "id": "general", "name": "General"}},
+  "resources": {
+    "/rooms/*/messages": [
+      {"_kind": "Message", "author": "Meron", "body": "Selam! Welcome to General 👋", "at": "09:41", "mine": false},
+      {"_kind": "Message", "author": "You", "body": "Hi! This room is rendered by PL resources.", "at": "09:42", "mine": true},
+      {"_kind": "Message", "author": "Meron", "body": "And the bubbles, timestamps, everything — one .plain file.", "at": "09:42", "mine": false}
+    ]
+  }
+}

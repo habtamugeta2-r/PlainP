@@ -1,0 +1,59 @@
+# 04 — Real-time chat
+# Tests: streaming resources, sending/failed states, list growth (Doc 03 §6.5).
+# Compare: web needs WebSocket client + reconnect logic + message store +
+#          scroll management (~200+ lines with a lib, more without).
+#          PL: `from live` is the socket, cache, and reconnect. The runtime
+#          owns the pipe; you own what messages look like.
+
+needs network chat.example.com
+
+kind Message:
+  author: Text
+  body: Text
+  at: Moment
+  mine: Bool = no
+
+page RoomPage(room) at "/rooms/{room.id}":
+  messages from live "/rooms/{room.id}/messages"
+  draft = ""
+  problem = nothing
+
+  to send:
+    if draft trimmed is empty: return
+    text-to-send = draft
+    draft = ""
+    result = post "/rooms/{room.id}/messages" body text-to-send
+    when result:
+      is failed why:
+        problem = "Couldn't send — you're offline. We'll retry."
+        draft = text-to-send
+      is ok: problem = nothing
+
+  column height fill:
+    text room.name size 20 bold padding 16
+
+    when messages:
+      is loading:
+        column align center spread center grow: spinner
+      is failed why:
+        ErrorBox "Chat is unavailable: {why}" retry refresh messages
+      is ready items:
+        scroll grow stick-to-bottom padding 16:
+          column gap 10:
+            for message in items:
+              row spread end if message.mine otherwise spread start:
+                column gap 2 padding 10 14 corners 16 width max 75%
+                  background accent if message.mine otherwise background surface
+                  enter fade-up:
+                  if not message.mine:
+                    text message.author size 12 bold color muted
+                  text message.body color on-accent if message.mine
+                  text message.at as time size 11 color muted
+
+    if problem exists:
+      text problem color danger padding 8 16 size 13
+
+    row gap 8 padding 12 background surface:
+      input bind draft placeholder "Message {room.name}…" grow
+        on submit send
+      button "Send" on tap send disabled if draft trimmed is empty

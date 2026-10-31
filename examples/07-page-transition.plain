@@ -1,0 +1,45 @@
+# 07 — Animated page transition + shared-element feel
+# Tests: spring animation, enter/exit, transitions between STATES not
+#        classes (Doc 02 §5, Doc 03 §4.4).
+# Compare: web needs the View Transitions API (2023+, partial support) or
+#          FLIP libraries / framer-motion (~60 lines + dependency);
+#          Flutter Hero+PageRouteBuilder ~40 lines; SwiftUI matchedGeometry
+#          is good and still needs namespace plumbing. PL: declare the
+#          transition on the page; matching `id`s animate between pages
+#          because Clear owns layout across the swap. Springs are the
+#          default physics — interrupt the gesture and motion continues
+#          from current velocity instead of popping (Doc 02 §5).
+
+shared photos from "/api/photos"
+
+page Gallery at "/":
+  transition slide spring snappy
+
+  scroll padding 20:
+    grid gap 14:
+      columns is 3 if width > 900 otherwise 2
+      for photo in photos ready-or []:
+        image photo.thumb aspect 1 corners 12 id "photo-{photo.id}"
+          on tap: go to Detail(photo)
+
+page Detail(photo) at "/photos/{photo.id}":
+  transition slide spring snappy
+  liked = no
+  scale = 1
+
+  column height fill background ink:
+    row spread between padding 16:
+      button "Back" plain color paper on tap: go back
+      button "♥ Like" if liked otherwise "♡ Like" plain color paper
+        on tap: liked = not liked
+
+    # Same id as the grid thumbnail: Clear springs this image from its
+    # grid rect to here (and back on `go back`). No measurement code.
+    image photo.full width fill grow fit contain id "photo-{photo.id}"
+      scale scale animate spring gentle
+      on pinch value: scale = value clamped 1 to 4
+      on double-tap: scale = 1 if scale > 1 otherwise 2
+
+    column gap 4 padding 20 enter fade-up:
+      text photo.title color paper size 22 bold
+      text "by {photo.author} · {photo.taken as date}" color paper-muted

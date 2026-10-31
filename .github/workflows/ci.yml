@@ -1,0 +1,32 @@
+name: PLAIN CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  oracle-python:
+    name: Python spec-oracle (reference implementation)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Unit tests
+        run: PYTHONPATH=src python3 -m unittest discover -s tests -v
+      - name: Corpus check
+        run: ./plain check examples/*.plain
+      - name: Phase-5 validate harness
+        run: ./plain validate
+
+  engine-rust:
+    name: Rust engine port (ADR-1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cargo test (parser parity with the oracle)
+        run: cargo test --manifest-path rust/Cargo.toml
+      - name: plain-rs corpus check
+        run: cargo run --manifest-path rust/Cargo.toml --bin plain-rs -- check examples/*.plain
