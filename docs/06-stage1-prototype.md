@@ -179,8 +179,24 @@ Still open: #4 shared-element `id` retention (parsed; animation pending).
 **Remaining oracle work:** real HTTP resources (replace sidecar providers
 behind the same `("ready"|"failed")` seam); animation timing/springs in
 the preview; `shared sync` sketch; themes as data; scroll culling; LSP.
-**Rust port (the production path):** mirror this module map 1:1
-(parser/tokens/expr first; they carry the semantics), port the 34-test
-suite unchanged as the conformance oracle, then swap paint to wgpu/Vello
-behind the same scene graph, add HarfBuzz text and OS a11y bridges.
-The Python tree stays as the reference for error wording and semantics.
+
+## 8. Rust port status (production path, ADR-1)
+
+Lives in `rust/` (zero-dependency crate `plainlang` + `plain-rs` CLI),
+mirroring the oracle module-for-module. This sandbox cannot install Rust
+(`static.rust-lang.org` is egress-blocked), so **CI is the compiler of
+record**: `.github/workflows/ci.yml` runs the Python oracle suite and the
+Rust parity tests on every push/PR.
+
+| Slice | Contents | Status |
+|---|---|---|
+| 1 | `tokens`, block tree, `ast`, `parser` (full classification parity incl. G-1…G-10), `plain-rs check` parse stage | ✅ CI green (9 tests) |
+| 2 | `checker` (all diagnostics + did-you-mean via normalized Levenshtein), `plain-rs check` = parse+check | ✅ CI green (15 tests) |
+| 3 | `expr` parser/evaluator + `runtime` (state/derived/actions/`keep`) | next |
+| 4 | `scene` + `layout` (Flow) + `a11y` derivation | planned |
+| 5 | Clear paint: wgpu/Vello per ADR-5 (SVG writer first for parity), HarfBuzz text, native window | planned |
+
+Rule of the port: no semantic may diverge silently — each Rust slice ships
+with tests translated from `tests/test_stage1.py`, and error wording is
+asserted by substring in *both* suites. When they disagree, the oracle
+(and before it, the examples) wins until a spec amendment says otherwise.

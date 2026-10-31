@@ -66,11 +66,14 @@ PLAIN
 │                                        grammar decisions, honest gaps
 ├── examples/ ......................... Canonical .plain programs (the spec
 │                                        made concrete) + LOC comparisons
-├── src/plainlang/ .................... Stage-1 reference implementation
-│                                        (zero-dep Python; production stays
-│                                        Rust per ADR-1 — see Doc 06 §1)
-├── tests/ ............................ 22 spec-oracle tests (`make test`)
-└── plain ............................. The CLI: `./plain run|check|render|a11y`
+├── src/plainlang/ .................... Reference implementation / spec-oracle
+│                                        (zero-dep Python — semantics' home)
+├── rust/ ............................. Production engine port (ADR-1):
+│                                        slices 1–2 (tokens/parser/checker)
+│                                        green in CI — status: Doc 06 §8
+├── tests/ ............................ 34 spec-oracle tests (`make test`)
+│                                        + Rust parity tests in rust/tests/
+└── plain ............................. The CLI: `./plain run|check|render|a11y|fmt|validate`
 ```
 
 ## Try it (Stage-1 prototype — actually runs)
