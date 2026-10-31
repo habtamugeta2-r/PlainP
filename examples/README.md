@@ -40,9 +40,9 @@ code — is PLAIN's actual claim. LOC is just its shadow.
    (`look chip-selected if … otherwise look chip`, `strike if task.done`)
    are the one spelling — implemented and tested. The comma-suffixed form
    sketched in Doc 03 §4.4 is withdrawn.
-2. `04` uses `refresh messages` as an action expression and `ready-or []`
-   in `07` — resource conveniences to ratify or cut at Stage 3 RFC.
-   Cutting is allowed; adding a second spelling is not.
+2. ◐ **Half-resolved (Stage 3, Doc 06 G-10):** `ready-or []` (`07`) is
+   ratified and implemented. `refresh messages` (`04`) still awaits its
+   RFC. Adding a second spelling for either is not allowed.
 3. ✅ **Resolved (Stage 1, Doc 06 G-4):** `is` derivations inside any block
    scope (`05`'s `when`-branch pipelines, `07`'s `columns is …`) parse and
    evaluate as scoped locals.

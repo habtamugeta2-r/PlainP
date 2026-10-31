@@ -1,8 +1,9 @@
-# Stage 1 — Reference Prototype (what now actually runs)
+# Stage 1–3 — Reference Prototype (what now actually runs)
 
-> Status of Doc 05 Phase 4, Stage 1 ("Hello World", months 1–3) + the
-> reactivity spike from Stage 2. Everything below is *executable*, not
-> aspirational: `./plain run examples/01-counter.plain` really works.
+> Status of Doc 05 Phase 4: **Stage 1 + Stage 2 + Stage-3 core complete
+> in the reference prototype.** All 9 normative examples render and the
+> interactive ones are usable in the preview. Everything below is
+> *executable*: `./plain run examples/02-todo.plain`, type, hit Enter.
 
 ```
 Stage-1 prototype
@@ -76,23 +77,45 @@ spread, `fill/fixed/fit + max`, padding 1/2/4; interpolation; derived a11y;
 hot reload with state; spec-exact error messages ("`` `button` needs
 something to show… Try: button "Save" on tap save`` — Doc 03 §10, verbatim).
 
-**Parse+check only (render raises `UnsupportedYet` naming its stage):**
-resources (`from`, `when` — Stage 3), navigation (Stage 3), `scene3d/table`
-(Stage 2/3+), transitions/gestures beyond tap, `keep` persistence (parsed;
-Stage 2 task), themes as data (default palette built in), stdlib components
-(`ErrorBox`…), name resolution in the checker (runtime reports unknown
-names plainly today), text wrapping/shaping (approximate metrics), input
-*editing* in the web preview (inputs render; two-way `bind` executes in
-headless tests via state, HTML form wiring is first Stage-2 task).
+**Added in Stage 2 (all tested):** typing end-to-end — HTML form overlays
+bound to scene inputs, `type → Enter` fires `on submit`, a JS-optional
+`/sync` path makes `type → click Add` work too; toggle taps flip `bind`
+targets; disabled buttons don't fire. Container `width/height/narrow`
+builtins during scene build (navbar switches inline-links ↔ Menu by real
+viewport); `keep` persistence (`.plain/<app>.json`, survives restarts,
+`/reset` clears); checker name resolution for event actions + looks;
+`./plain fmt` (idempotent on the whole corpus); greedy text wrapping with
+fixed-width parents constraining children (Flow, constraints-down).
 
-**Stage-1 exit criteria (Doc 05) — scoreboard:** ✅ new-dev Hello World
-from README in <5 min (only prerequisite: clone; zero install); ✅ static
-scene byte-identical across OSes (deterministic SVG, golden test); ✅
-engine+VM <60k LOC at Stage 1 (actual: ~2.9k — prototype LOC isn't the Rust
-budget, but plainness is holding); ✅ examples 00/01 run as written
-(Stage-2 criterion, met early, incl. interactivity). ⏳ wgpu window — replaced
-this stage by SVG + web preview (§6.2); the CPU-fallback-first choice also
-de-risks ADR-5's decision gate with real layout code to measure.
+**Added in Stage-3 core (all tested):** resources with sidecar data
+providers (`<app>.sample.json`) as `("ready"|"failed", payload)` values;
+`when` matching over resources with payload binding; `ready-or` pipe;
+navigation stack (`go to Page(x)`, `go back`, page params); `table/header/
+cell` with shared column widths; stdlib `ErrorBox`; `scene3d` as a labeled
+viewport placeholder whose sibling 2D UI works fully (configurator price
+updates from swatches/cushion — the one-tree claim holds); form validation
+flow runs (submit-empty → errors appear); page-link literals (G-9).
+
+**Phase-5 harness:** `./plain validate` builds every example and reports
+PL lines / scene nodes / SVG bytes / build ms — currently **9/9 render,
+0.7–6 ms builds** on this sandbox (Python! — the point is headroom, not
+the number).
+
+**Still deferred (render raises `UnsupportedYet` naming its stage):**
+real network fetch for resources/`post` (sidecar providers stand in),
+animation/springs + page transitions (declared, ignored), gestures beyond
+tap, themes as author data (built-in palette), `shared sync` CRDTs,
+scroll viewport culling, HarfBuzz shaping/wrapping polish, non-`ErrorBox`
+stdlib components, the Rust/GPU production engine (ADR-1/5 — §7).
+
+**Exit-criteria scoreboard (Doc 05):** Stage 1 ✅ (Hello World <5 min;
+byte-identical SVG; ~4k LOC ≪ 60k budget). Stage 2 ✅ in prototype
+(00/01/02/03 run as written; todo usable by typing; frame costs are
+CPython numbers, not the Rust budget — noted honestly). Stage 3 ✅ core
+(04–08 render + interact as tested above). Stage 4/5 partially (stdlib
+seed, Looking-Glass panels, validate harness; Openly/JIT/iOS shell are
+production-engine work, not oracle work). ⏳ wgpu window — SVG + web
+preview stands in (§6.2), de-risking ADR-5's gate with measurable layout.
 
 ## 5. Grammar decisions forced by implementation (spec amendments)
 
@@ -125,10 +148,13 @@ belongs in Doc 03 at the next spec rev:
   (ex. 04/06/08) — except `name is …` (G-4).
 - **G-8 Page = viewport:** the page's root child fills the viewport unless
   it sizes itself otherwise (`width fill max 560 center-self`, ex. 02).
+- **G-9 Page-link literals:** `Home-link` evaluates to the link record
+  `{title, page}` for `page Home` (ex. 03) — navigation data stays plain
+  values; `go to link.page` navigates by the record's page.
+- **G-10 `ready-or` ratified** (pressure point 2, half): `photos ready-or []`
+  is the resource-unwrap spelling. `refresh x` remains open for the RFC.
 
-Still open (unchanged from examples/README): #2 resource conveniences
-(`refresh x`, `ready-or []`) at the Stage-3 RFC; #4 shared-element `id`
-retention (parsed; animation is Stage 3+).
+Still open: #4 shared-element `id` retention (parsed; animation pending).
 
 ## 6. Deliberate divergences (prototype simplifications, seams marked)
 
@@ -150,12 +176,11 @@ retention (parsed; animation is Stage 3+).
 
 ## 7. Next
 
-**Stage 2 (in order):** (a) input `bind` end-to-end in the preview
-(HTML forms → `on submit` — makes Todo fully usable, closing the Stage-2
-"02 runs as written" criterion); (b) container `width` in scene env →
-renders 03-navbar for real; (c) checker name resolution + `keep`
-(file-backed persistence); (d) `plain fmt` (block-tree re-indent);
-(e) text wrapping. **Rust port:** mirror this module map 1:1
-(parser/tokens/expr first; they carry the semantics), port the test suite
-unchanged as the conformance oracle, then swap paint to wgpu/Vello behind
-the same scene. The Python tree stays as the reference for error wording.
+**Remaining oracle work:** real HTTP resources (replace sidecar providers
+behind the same `("ready"|"failed")` seam); animation timing/springs in
+the preview; `shared sync` sketch; themes as data; scroll culling; LSP.
+**Rust port (the production path):** mirror this module map 1:1
+(parser/tokens/expr first; they carry the semantics), port the 34-test
+suite unchanged as the conformance oracle, then swap paint to wgpu/Vello
+behind the same scene graph, add HarfBuzz text and OS a11y bridges.
+The Python tree stays as the reference for error wording and semantics.

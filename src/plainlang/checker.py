@@ -8,15 +8,17 @@ features is *not* an error here; it only fails when rendered):
   * unknown property/flag on Stage-1-known nodes (with did-you-mean)
   * duplicate state names in one page/component
   * page missing its address
-  * `otherwise` is parser-caught; name resolution is deferred to Stage 2
-    (needs full scope/type info) — runtime reports unknown names plainly.
+  * `otherwise` is parser-caught; event-action and look names are resolved
+    (Stage 2); value names are still runtime-checked with plain messages
+    until full scope/type info lands.
 """
 from __future__ import annotations
 
 import difflib
 
 from .ast_nodes import (
-    DerivedDecl, ForNode, IfNode, Node, RawStmt, StateDecl, WhenNode,
+    ActionDecl, DerivedDecl, ForNode, IfNode, Node, RawStmt, StateDecl,
+    WhenNode,
 )
 from .errors import PlainError
 from .parser import FLAGS, NODE_KINDS, SPECIAL_PROPS, VALUE_PROPS_1, VALUE_PROPS_EXPR
@@ -49,25 +51,27 @@ def check_program(program) -> list[PlainError]:
                         f"different name for the second one.",
                         line_no=stmt.line_no))
                 seen[stmt.name] = stmt.line_no
-        _check_block(owner.body, program, errors, visual=True)
+        actions = {s.name for s in owner.body if isinstance(s, ActionDecl)}
+        _check_block(owner.body, program, errors, visual=True, actions=actions,
+                     owner_name=getattr(owner, "name", ""))
     return errors
 
 
-def _check_block(stmts, program, errors, visual):
+def _check_block(stmts, program, errors, visual, actions=frozenset(), owner_name=""):
     for stmt in stmts:
         if isinstance(stmt, Node):
-            _check_node(stmt, program, errors)
+            _check_node(stmt, program, errors, actions, owner_name)
         elif isinstance(stmt, IfNode):
-            _check_block(stmt.then_body, program, errors, visual)
-            _check_block(stmt.else_body, program, errors, visual)
+            _check_block(stmt.then_body, program, errors, visual, actions, owner_name)
+            _check_block(stmt.else_body, program, errors, visual, actions, owner_name)
         elif isinstance(stmt, ForNode):
-            _check_block(stmt.body, program, errors, visual)
+            _check_block(stmt.body, program, errors, visual, actions, owner_name)
         elif isinstance(stmt, WhenNode):
             for br in stmt.branches:
-                _check_block(br.body, program, errors, visual)
+                _check_block(br.body, program, errors, visual, actions, owner_name)
         elif isinstance(stmt, RawStmt) and visual:
             for child in stmt.children or []:
-                _check_block([child], program, errors, visual)
+                _check_block([child], program, errors, visual, actions, owner_name)
             head = stmt.text.split()[0].rstrip(":") if stmt.text.split() else ""
             if head not in ("go", "return", "transition", "refresh"):
                 close = difflib.get_close_matches(head, NODE_KINDS, n=1, cutoff=0.65)
@@ -78,7 +82,28 @@ def _check_block(stmts, program, errors, visual):
                         hint=f"did you mean `{close[0]}`?"))
 
 
-def _check_node(node: Node, program, errors):
+def _check_node(node: Node, program, errors, actions=frozenset(), owner_name=""):
+    # event targets must be actions declared in this page/component
+    for ev in node.events:
+        if ev.action:
+            name = ev.action.split("(")[0].strip()
+            if name not in actions:
+                close = difflib.get_close_matches(name, sorted(actions), n=1,
+                                                  cutoff=0.6)
+                hint = (f"did you mean `to {close[0]}`?" if close else
+                        f"write it as `to {name}:` in this page/component")
+                errors.append(PlainError(
+                    f"There's no action called `{name}` here for "
+                    f"`on {ev.name}` to run.", line_no=node.line_no, hint=hint))
+    # looks must exist
+    for p in node.props:
+        if p.name == "look":
+            for cand in (p, p.otherwise):
+                if cand is not None and cand.value.strip() not in program.looks:
+                    errors.append(PlainError(
+                        f"There's no look called `{cand.value.strip()}`.",
+                        line_no=node.line_no,
+                        hint=f"write it as `look {cand.value.strip()}:` in this file"))
     if node.kind == "button" or node.kind == "link":
         if node.content is None and node.content_expr is None \
                 and node.prop("label") is None and not node.children:
@@ -118,6 +143,7 @@ def _check_node(node: Node, program, errors):
                         line_no=node.line_no, hint=hint))
     for ch in node.children:
         if isinstance(ch, Node):
-            _check_node(ch, program, errors)
+            _check_node(ch, program, errors, actions, owner_name)
         elif isinstance(ch, (IfNode, ForNode, WhenNode)):
-            _check_block([ch], program, errors, visual=True)
+            _check_block([ch], program, errors, visual=True,
+                         actions=actions, owner_name=owner_name)

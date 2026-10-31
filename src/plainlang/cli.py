@@ -44,7 +44,7 @@ def cmd_check(args) -> int:
 
 def cmd_render(args) -> int:
     try:
-        app = App(_read(args.file), name=args.file)
+        app = App.for_file(args.file)
         svg = app.svg(args.width, args.height)
     except PlainError as e:
         print(e.render(), file=sys.stderr)
@@ -59,7 +59,7 @@ def cmd_render(args) -> int:
 
 def cmd_a11y(args) -> int:
     try:
-        app = App(_read(args.file), name=args.file)
+        app = App.for_file(args.file)
         scene = app.build(args.width, args.height)
     except PlainError as e:
         print(e.render(), file=sys.stderr)
@@ -79,6 +79,58 @@ def cmd_run(args) -> int:
         print(e.render(), file=sys.stderr)
         return 1
     serve(args.file, port=args.port, width=args.width, height=args.height)
+    return 0
+
+
+def cmd_fmt(args) -> int:
+    from .fmt import format_source
+    bad = 0
+    for path in args.files:
+        try:
+            source = _read(path)
+            formatted = format_source(source)
+        except PlainError as e:
+            print(f"{path}:\n{e.render()}\n", file=sys.stderr)
+            bad += 1
+            continue
+        if args.check:
+            if formatted != source:
+                print(f"{path}: not formatted (run `./plain fmt {path}`)")
+                bad += 1
+        elif args.write:
+            Path(path).write_text(formatted, encoding="utf-8")
+            print(f"{path}: formatted")
+        else:
+            print(formatted, end="")
+    return 1 if bad else 0
+
+
+def cmd_validate(args) -> int:
+    """Phase-5 validation harness: build every example, report real metrics."""
+    import glob as glob_mod
+    import time
+    from .errors import UnsupportedYet
+    rows = []
+    for path in sorted(glob_mod.glob(args.pattern)):
+        lines = [l for l in Path(path).read_text(encoding="utf-8").splitlines()
+                 if l.strip() and not l.strip().startswith("#")]
+        started = time.perf_counter()
+        status, nodes, svg_bytes = "renders ✓", 0, 0
+        try:
+            app = App.for_file(path)
+            scene = app.build(args.width, args.height)
+            nodes = sum(1 for _ in scene.walk())
+            svg_bytes = len(app.svg(args.width, args.height))
+        except UnsupportedYet as e:
+            status = f"parse+check only ({e.stage})"
+        except PlainError as e:
+            status = f"ERROR: {e.message}"
+        ms = (time.perf_counter() - started) * 1000
+        rows.append((Path(path).name, len(lines), status, nodes, svg_bytes, ms))
+    print(f"| Example | PL lines | Prototype status | Scene nodes | SVG bytes | Build ms |")
+    print(f"|---|---|---|---|---|---|")
+    for name, loc, status, nodes, b, ms in rows:
+        print(f"| `{name}` | {loc} | {status} | {nodes or '—'} | {b or '—'} | {ms:.1f} |")
     return 0
 
 
@@ -138,6 +190,18 @@ def main(argv=None) -> int:
     p = sub.add_parser("parse", help="dump the AST as JSON (debug)")
     p.add_argument("file")
     p.set_defaults(fn=cmd_parse)
+
+    p = sub.add_parser("fmt", help="format .plain files canonically")
+    p.add_argument("files", nargs="+")
+    p.add_argument("--write", action="store_true", help="rewrite files in place")
+    p.add_argument("--check", action="store_true", help="fail if unformatted")
+    p.set_defaults(fn=cmd_fmt)
+
+    p = sub.add_parser("validate", help="Phase-5 harness: build examples, report metrics")
+    p.add_argument("pattern", nargs="?", default="examples/*.plain")
+    p.add_argument("--width", type=float, default=412)
+    p.add_argument("--height", type=float, default=800)
+    p.set_defaults(fn=cmd_validate)
 
     args = ap.parse_args(argv)
     return args.fn(args)

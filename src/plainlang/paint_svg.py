@@ -54,7 +54,7 @@ def _paint(node, out: list[str], tap_prefix):
     bg = _color(node.props.get("background"))
     corners = float(node.props.get("corners", 0) or 0)
 
-    if k in ("column", "row", "stack", "grid", "scroll"):
+    if k in ("column", "row", "stack", "grid", "scroll", "table", "header"):
         if bg:
             out.append(f'<rect x="{_f(node.x)}" y="{_f(node.y)}" width="{_f(node.w)}" '
                        f'height="{_f(node.h)}" rx="{_f(corners)}" fill="{bg}"/>')
@@ -79,17 +79,27 @@ def _paint(node, out: list[str], tap_prefix):
         out.append(_wrap_tap(node, frags[0] + "".join(inner), tap_prefix))
         return
 
-    if k == "text":
+    if k in ("text", "cell"):
         size = float(node.props.get("size", 16))
         fill = _color(node.props.get("color"), DEFAULT_THEME["ink"])
         weight = ' font-weight="700"' if "bold" in node.flags else ""
         deco = ' text-decoration="line-through"' if "strike" in node.flags else ""
-        anchor = "start"
-        tx = node.x
-        # text is painted from its top-left using dominant-baseline hanging
-        frag = (f'<text x="{_f(tx)}" y="{_f(node.y)}" font-size="{_f(size)}" '
+        align_end = node.props.get("align") == "end"
+        tx = node.x + node.w - 10 if (k == "cell" and align_end) else \
+            node.x + (10 if k == "cell" else 0)
+        anchor = "end" if (k == "cell" and align_end) else "start"
+        lines = node.props.get("_lines") or [node.text]
+        tspans = "".join(
+            f'<tspan x="{_f(tx)}" y="{_f(node.y + (8 if k == "cell" else 0) + i * size * 1.3)}">'
+            f'{xml.escape(ln)}</tspan>' for i, ln in enumerate(lines))
+        frag = (f'<text font-size="{_f(size)}" '
                 f'fill="{fill}"{weight}{deco} text-anchor="{anchor}" '
-                f'dominant-baseline="hanging">{xml.escape(node.text)}</text>')
+                f'dominant-baseline="hanging">{tspans}</text>')
+        if k == "cell":
+            frag = (f'<rect x="{_f(node.x)}" y="{_f(node.y)}" width="{_f(node.w)}" '
+                    f'height="{_f(node.h)}" fill="none" stroke="#E8E8EF"/>') + frag
+            out.append(_wrap_tap(node, frag, tap_prefix))
+            return
         if bg:
             frag = (f'<rect x="{_f(node.x)}" y="{_f(node.y)}" width="{_f(node.w)}" '
                     f'height="{_f(node.h)}" rx="{_f(corners)}" fill="{bg}"/>') + frag
@@ -155,6 +165,17 @@ def _paint(node, out: list[str], tap_prefix):
                 f'<text x="{_f(node.x + node.w/2)}" y="{_f(node.y + node.h/2)}" '
                 f'font-size="12" fill="{DEFAULT_THEME["muted"]}" text-anchor="middle" '
                 f'dominant-baseline="central">🖼 {xml.escape(node.text or "image")}</text>')
+        out.append(_wrap_tap(node, frag, tap_prefix))
+        return
+
+    if k == "scene3d":
+        frag = (f'<rect x="{_f(node.x)}" y="{_f(node.y)}" width="{_f(node.w)}" '
+                f'height="{_f(node.h)}" fill="#20202A"/>'
+                f'<text x="{_f(node.x + node.w/2)}" y="{_f(node.y + node.h/2 - 8)}" '
+                f'font-size="28" text-anchor="middle" fill="#BDBDF5">◆</text>'
+                f'<text x="{_f(node.x + node.w/2)}" y="{_f(node.y + node.h/2 + 22)}" '
+                f'font-size="13" fill="#C9C9D1" text-anchor="middle">'
+                f'3D · {xml.escape(node.text or "scene")}</text>')
         out.append(_wrap_tap(node, frag, tap_prefix))
         return
 

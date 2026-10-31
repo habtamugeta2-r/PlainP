@@ -99,6 +99,26 @@ def text_size(node, text: str) -> tuple[float, float]:
     return (len(text) * size * factor, size * 1.3)
 
 
+def wrap_lines(node, text: str, max_w: float) -> list[str]:
+    """Greedy word wrap to max_w (single line when unconstrained/short)."""
+    size = float(node.props.get("size", _DEFAULT_TEXT))
+    factor = 0.56 if "bold" in node.flags else 0.52
+    char_w = size * factor
+    if max_w in (INF, 0) or len(text) * char_w <= max_w:
+        return [text]
+    lines, cur = [], ""
+    for word in text.split(" "):
+        trial = f"{cur} {word}".strip()
+        if len(trial) * char_w <= max_w or not cur:
+            cur = trial
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines or [""]
+
+
 _DEFAULT_TEXT = 16.0
 
 
@@ -109,11 +129,40 @@ def _measure(node, c: Constraints) -> tuple[float, float]:
     t, r, b, l = _pad(node)
     inner = Constraints(max(0.0, c.max_w - l - r) if c.max_w != INF else INF,
                         max(0.0, c.max_h - t - b) if c.max_h != INF else INF)
+    # a fixed/clamped own width constrains children (Flow: constraints down)
+    _spec = node.props.get("width") or {}
+    if isinstance(_spec, dict):
+        cap = None
+        if _spec.get("mode") == "fixed":
+            cap = _len_spec(_spec.get("value"), c.max_w)
+        mx = _len_spec(_spec.get("max"), c.max_w)
+        if mx is not None:
+            cap = min(cap, mx) if cap is not None else mx
+        if cap is not None:
+            inner.max_w = min(inner.max_w, max(0.0, cap - l - r))
 
     if k == "text":
-        w, h = text_size(node, node.text)
+        lines = wrap_lines(node, node.text, inner.max_w)
+        node.props["_lines"] = lines
+        size = float(node.props.get("size", _DEFAULT_TEXT))
+        w = max(text_size(node, ln)[0] for ln in lines)
+        h = len(lines) * size * 1.3
         node.w = _apply_size(node, "width", w + l + r, c.max_w)
         node.h = _apply_size(node, "height", h + t + b, c.max_h)
+        return node.w, node.h
+
+    if k == "cell":
+        lines = wrap_lines(node, node.text, inner.max_w)
+        node.props["_lines"] = lines
+        size = float(node.props.get("size", _DEFAULT_TEXT))
+        w = max(text_size(node, ln)[0] for ln in lines) + 20
+        node.w = _apply_size(node, "width", w, c.max_w)
+        node.h = _apply_size(node, "height", len(lines) * size * 1.3 + 16, c.max_h)
+        return node.w, node.h
+
+    if k == "scene3d":
+        node.w = _apply_size(node, "width", 320, c.max_w)
+        node.h = _apply_size(node, "height", 320, c.max_h)
         return node.w, node.h
 
     if k == "button":
@@ -175,6 +224,35 @@ def _measure(node, c: Constraints) -> tuple[float, float]:
             ch_max = max(ch_max, ch.h)
         node.w = _apply_size(node, "width", cw + l + r, c.max_w)
         node.h = _apply_size(node, "height", ch_max + t + b, c.max_h)
+        return node.w, node.h
+
+    if k == "table":
+        # Table = header/row children whose cells share column widths.
+        rows = node.children
+        for row in rows:
+            for cell in row.children:
+                _measure(cell, inner)
+        ncols = max([len(r.children) for r in rows], default=0)
+        col_w = [0.0] * ncols
+        for row in rows:
+            for j, cell in enumerate(row.children):
+                col_w[j] = max(col_w[j], cell.w)
+        total = sum(col_w)
+        if inner.max_w != INF and total > 0 and total < inner.max_w:
+            bump = (inner.max_w - total) / ncols
+            col_w = [w + bump for w in col_w]
+            total = inner.max_w
+        h = 0.0
+        for row in rows:
+            row.w = total
+            row.h = max([c.h for c in row.children], default=0.0)
+            for j, cell in enumerate(row.children):
+                cell.w = col_w[j]
+                cell.h = row.h
+            h += row.h
+        node.props["_col_w"] = col_w
+        node.w = _apply_size(node, "width", total + l + r, c.max_w)
+        node.h = _apply_size(node, "height", h + t + b, c.max_h)
         return node.w, node.h
 
     if k in ("column", "scroll"):
@@ -251,6 +329,18 @@ def _place(node, x: float, y: float):
     if "center" in node.flags and k in ("text",):
         align = "center"
 
+    if k == "table":
+        col_w = node.props.get("_col_w", [])
+        cur = cy
+        for row in node.children:
+            row.x, row.y = cx, cur
+            rx = cx
+            for j, cell in enumerate(row.children):
+                _place(cell, rx, cur)
+                rx += col_w[j] if j < len(col_w) else cell.w
+            cur += row.h
+        return
+
     if k in ("column", "scroll"):
         content_h = sum(ch.h for ch in node.children) + gap * max(0, len(node.children) - 1)
         free = max(0.0, inner_h - content_h)
@@ -297,6 +387,8 @@ def _place(node, x: float, y: float):
             share = free / len(growers)
             for g in growers:
                 g.w += share
+                if inner_h > g.h:
+                    g.h = inner_h  # grow fills the cross axis too (scene3d…)
                 _remeasure_stretched(g)
         elif spread == "center":
             offset = free / 2

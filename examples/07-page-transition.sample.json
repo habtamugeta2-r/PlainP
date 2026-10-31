@@ -1,0 +1,10 @@
+{
+  "resources": {
+    "/api/photos": [
+      {"id": 1, "thumb": "lalibela.jpg", "full": "lalibela-full.jpg", "title": "Rock churches of Lalibela", "author": "Meron", "taken": "2025-01-07"},
+      {"id": 2, "thumb": "simien.jpg", "full": "simien-full.jpg", "title": "Simien Mountains at dawn", "author": "Dawit", "taken": "2025-02-18"},
+      {"id": 3, "thumb": "coffee.jpg", "full": "coffee-full.jpg", "title": "Bunna ceremony", "author": "Selam", "taken": "2025-03-02"},
+      {"id": 4, "thumb": "merkato.jpg", "full": "merkato-full.jpg", "title": "Merkato colors", "author": "Yonas", "taken": "2025-03-21"}
+    ]
+  }
+}

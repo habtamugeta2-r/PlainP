@@ -401,7 +401,9 @@ class _Parser:
                 return toks[end:]
             node.content = t0.text
             return toks[1:]
-        if t0.kind == T.NAME and (not is_component or t0.text not in ANY_PROP_START):
+        if t0.kind == T.NAME and (not is_component
+                                  or (t0.text not in ANY_PROP_START
+                                      and t0.text not in self.sigs.get(node.kind, []))):
             # expression content: name(.name)* with optional `as fmt`,
             # or NUMBER
             i = 1
@@ -649,8 +651,7 @@ class _Parser:
         name = toks[i + 1].text if i + 1 < n else ""
         j = i + 2
         param = None
-        if j < n and toks[j].kind == T.NAME and j + 1 < n and toks[j + 1].kind == T.COLON \
-                and toks[j].text not in ANY_PROP_START:
+        if j < n and toks[j].kind == T.NAME and j + 1 < n and toks[j + 1].kind == T.COLON:
             param = toks[j].text
             j += 1
         if j < n and toks[j].kind == T.COLON:

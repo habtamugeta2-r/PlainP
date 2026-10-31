@@ -1,0 +1,14 @@
+{
+  "resources": {
+    "/api/people": [
+      {"_kind": "Person", "name": "Selam Tesfaye", "team": "Design", "salary": 4200},
+      {"_kind": "Person", "name": "Yonas Alemu", "team": "Engineering", "salary": 6800},
+      {"_kind": "Person", "name": "Fatima Noor", "team": "Engineering", "salary": 6400},
+      {"_kind": "Person", "name": "Dawit Haile", "team": "Product", "salary": 5500},
+      {"_kind": "Person", "name": "Hanna Girma", "team": "Design", "salary": 4700},
+      {"_kind": "Person", "name": "Samuel Bekele", "team": "Support", "salary": 3100},
+      {"_kind": "Person", "name": "Tigist Worku", "team": "Engineering", "salary": 7200},
+      {"_kind": "Person", "name": "Bereket Alemayehu", "team": "Product", "salary": 5300}
+    ]
+  }
+}

@@ -233,5 +233,150 @@ class TestRuntimeAndScene(unittest.TestCase):
         self.assertEqual(svg, App(src_of("00-hello-world.plain")).svg(800, 600))
 
 
+class TestStage2(unittest.TestCase):
+    """Doc 05 Stage-2 scope: interactive inputs, responsive width,
+    persistence, name resolution, formatter."""
+
+    def test_todo_by_typing_end_to_end(self):
+        app = App.for_file(ROOT / "examples/02-todo.plain")
+        app.build()
+        box = [n for n in app.scene.walk() if n.kind == "input"][0]
+        app.set_field(box.path, "Write tests", submit=True)  # type + Enter
+        app.build()
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("Write tests", texts)
+        self.assertIn("1 to go", texts)
+        # flip the task's toggle → done → "0 to go"
+        tog = [n for n in app.scene.walk() if n.kind == "toggle"][0]
+        app.tap(tog.path)
+        app.build()
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("0 to go", texts)
+
+    def test_navbar_is_container_responsive(self):
+        wide = App.for_file(ROOT / "examples/03-navbar.plain")
+        wide.build(800, 600)
+        wide_texts = {n.text for n in wide.scene.walk() if n.text}
+        self.assertIn("Docs", wide_texts)
+        self.assertNotIn("Menu", wide_texts)
+        narrow = App.for_file(ROOT / "examples/03-navbar.plain")
+        narrow.build(390, 700)
+        narrow_texts = {n.text for n in narrow.scene.walk() if n.text}
+        self.assertIn("Menu", narrow_texts)
+        self.assertNotIn("Docs", narrow_texts)
+
+    def test_keep_persists_across_apps(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            store = Path(td) / "state.json"
+            src = src_of("02-todo.plain")
+            app = App(src, persist_path=store)
+            app.build()
+            box = [n for n in app.scene.walk() if n.kind == "input"][0]
+            app.set_field(box.path, "Kept task", submit=True)
+            fresh = App(src, persist_path=store)  # new runtime, same file
+            fresh.build()
+            texts = [n.text for n in fresh.scene.walk() if n.text]
+            self.assertIn("Kept task", texts)
+
+    def test_checker_unknown_action_and_look(self):
+        prog = parse_program(
+            'page Home at "/":\n  column:\n'
+            '    button "Go" on tap fly\n    text "x" look fancy\n')
+        msgs = [e.render() for e in check_program(prog)]
+        self.assertTrue(any("no action called `fly`" in m for m in msgs), msgs)
+        self.assertTrue(any("no look called `fancy`" in m for m in msgs), msgs)
+
+    def test_fmt_idempotent_and_still_checks(self):
+        from plainlang.fmt import format_source
+        for f in EXAMPLES:
+            with self.subTest(file=f.name):
+                once = format_source(f.read_text(encoding="utf-8"))
+                self.assertEqual(format_source(once), once)
+                self.assertEqual(check_program(parse_program(once)), [])
+
+    def test_long_text_wraps(self):
+        app = App('page Home at "/":\n  column width 200 padding 10:\n'
+                  '    text "one two three four five six seven eight nine ten"\n')
+        scene = app.build(800, 600)
+        t = [n for n in scene.walk() if n.kind == "text"][0]
+        self.assertGreater(len(t.props["_lines"]), 1)
+        self.assertGreater(t.h, 16 * 1.3 * 1.5)
+
+
+class TestStage3(unittest.TestCase):
+    """Doc 05 Stage-3 core: resources + when, navigation, tables, forms."""
+
+    def test_chat_resource_renders_messages(self):
+        app = App.for_file(ROOT / "examples/04-chat.plain")
+        app.build(412, 800)
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("General", texts)               # page param (sidecar)
+        self.assertIn("Selam! Welcome to General 👋", texts)
+
+    def test_datatable_search_sort_paginate(self):
+        app = App.for_file(ROOT / "examples/05-datatable.plain")
+        app.build(1000, 700)
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("Tigist Worku", texts)
+        box = [n for n in app.scene.walk() if n.kind == "input"][0]
+        app.set_field(box.path, "Design", submit=False)
+        app.build(1000, 700)
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("Selam Tesfaye", texts)
+        self.assertNotIn("Tigist Worku", texts)
+        self.assertIn("2 people · page 1 of 1", texts)
+
+    def test_gallery_navigation_push_and_back(self):
+        app = App.for_file(ROOT / "examples/07-page-transition.plain")
+        app.build(412, 800)
+        img = [n for n in app.scene.walk() if n.kind == "image"][0]
+        app.tap(img.path)
+        self.assertEqual(app.stack[-1][0], "Detail")
+        app.build(412, 800)
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("Rock churches of Lalibela", texts)
+        back = [n for n in app.scene.walk()
+                if n.kind == "button" and n.text == "Back"][0]
+        app.tap(back.path)
+        self.assertEqual(app.stack[-1][0], "Gallery")
+
+    def test_form_validation_flow(self):
+        app = App.for_file(ROOT / "examples/06-form-validation.plain")
+        app.build(500, 800)
+        btn = [n for n in app.scene.walk()
+               if n.kind == "button" and "Create account" in n.text][0]
+        app.tap(btn.path)  # submit empty → touched → errors appear
+        app.build(500, 800)
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("Please enter your name.", texts)
+        self.assertIn("Use at least 8 characters.", texts)
+
+    def test_configurator_one_state_drives_2d_and_3d(self):
+        app = App.for_file(ROOT / "examples/08-viewer-3d.plain")
+        app.build(900, 600)
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("$334", texts)  # 299 + 0 (Oak) + 35 cushion
+        self.assertIn("3D · /models/chair.glb", app.svg(900, 600))
+        swatches = [n for n in app.scene.walk()
+                    if n.kind == "box" and "tap" in n.events]
+        self.assertEqual(len(swatches), 3)
+        app.tap(swatches[1].path)  # Walnut (+40)
+        app.build(900, 600)
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("$374", texts)
+
+    def test_disabled_button_does_not_fire(self):
+        app = App('component C:\n  n = 0\n  column:\n'
+                  '    button "B" disabled if yes on tap: n += 1\n'
+                  '    text "{n}"\npage Home at "/":\n  C\n')
+        app.build()
+        btn = [n for n in app.scene.walk() if n.kind == "button"][0]
+        app.tap(btn.path)
+        app.build()
+        texts = [n.text for n in app.scene.walk() if n.text]
+        self.assertIn("0", texts)
+
+
 if __name__ == "__main__":
     unittest.main()

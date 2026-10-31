@@ -18,6 +18,7 @@ from .expr import evaluate_text, interpolate, truthy
 SUPPORTED_NODES = {
     "column", "row", "stack", "grid", "scroll", "box", "text", "image",
     "button", "input", "toggle", "divider", "spacer", "spinner", "children",
+    "table", "header", "cell", "scene3d",
 }
 
 DEFAULT_THEME = {
@@ -39,6 +40,7 @@ class SceneNode:
     children: list = field(default_factory=list)
     events: dict = field(default_factory=dict)  # name -> (Event, scope_path, extra)
     scope_path: str = ""
+    bind: tuple | None = None  # (target, scope_path, extra) for input/toggle
     # layout results
     x: float = 0
     y: float = 0
@@ -62,8 +64,11 @@ class SceneBuilder:
         self.program = program
         self.runtime = runtime
         self._counter = 0
+        self._sizes: list[tuple[float, float]] = [(800.0, 600.0)]
 
-    def build_page(self, page, params: dict | None = None) -> SceneNode:
+    def build_page(self, page, params: dict | None = None,
+                   viewport: tuple[float, float] = (800.0, 600.0)) -> SceneNode:
+        self._sizes = [viewport]
         scope_path = f"page:{page.name}"
         sc = self.runtime.scope(scope_path, page)
         extra = dict(params or {})
@@ -81,7 +86,14 @@ class SceneBuilder:
             idx = len(out)
             child_path = f"{path}/{idx}"
             if isinstance(stmt, DerivedDecl):
-                local_derived[stmt.name] = stmt.expr  # scoped derivation
+                # Scoped derivation: evaluate now and bind for every
+                # following sibling (and their subtrees) via `extra`.
+                env = self._env(sc, extra, local_derived)
+                extra = {**extra,
+                         stmt.name: evaluate_text(stmt.expr, env,
+                                                  self.program.kinds,
+                                                  stmt.line_no)}
+                local_derived[stmt.name] = stmt.expr
             elif isinstance(stmt, Node):
                 env = self._env(sc, extra, local_derived)
                 out.extend(self._build_node(stmt, sc, scope_path, env,
@@ -89,13 +101,8 @@ class SceneBuilder:
                                             local_derived, extra))
             elif isinstance(stmt, IfNode):
                 env = self._env(sc, extra, local_derived)
-                try:
-                    cond = truthy(evaluate_text(stmt.condition, env,
-                                                self.program.kinds, stmt.line_no))
-                except PlainError:
-                    raise UnsupportedYet(
-                        f"condition `{stmt.condition}` (needs container "
-                        f"`width` or Stage-2+ values)", "Stage 2", stmt.line_no)
+                cond = truthy(evaluate_text(stmt.condition, env,
+                                            self.program.kinds, stmt.line_no))
                 body = stmt.then_body if cond else stmt.else_body
                 out.extend(self._build_block(body, sc, scope_path,
                                              extra, child_path, slot_children))
@@ -114,9 +121,19 @@ class SceneBuilder:
                                                  item_extra, f"{child_path}:{n}",
                                                  slot_children))
             elif isinstance(stmt, WhenNode):
-                raise UnsupportedYet("`when` over resources", "Stage 3",
-                                     stmt.line_no)
+                env = self._env(sc, extra, local_derived)
+                subject = evaluate_text(stmt.subject, env, self.program.kinds,
+                                        stmt.line_no)
+                branch, payload_name, payload = _match_branch(subject, stmt)
+                if branch is not None:
+                    bout = dict(extra)
+                    if payload_name:
+                        bout[payload_name] = payload
+                    out.extend(self._build_block(branch.body, sc, scope_path,
+                                                 bout, child_path, slot_children))
             elif isinstance(stmt, RawStmt):
+                if stmt.text.startswith("transition"):
+                    continue  # motion metadata; animation lands in Stage 3+
                 raise UnsupportedYet(f"`{stmt.text.split()[0]}` in a visual "
                                      f"position", "Stage 2/3", stmt.line_no,
                                      stmt.text)
@@ -124,6 +141,10 @@ class SceneBuilder:
 
     def _env(self, sc, extra, local_derived):
         env = self.runtime.env_for(sc, extra)
+        w, h = self._sizes[-1]
+        env.setdefault("width", w)       # container size builtins (Doc 03
+        env.setdefault("height", h)     # §5.3) — program state may shadow
+        env.setdefault("narrow", w < 600)
         for name, expr in local_derived.items():
             env[name] = evaluate_text(expr, env, self.program.kinds)
         return env
@@ -137,6 +158,8 @@ class SceneBuilder:
         if node.kind == "children":
             return list(slot_children or [])
         if node.kind[:1].isupper():
+            if node.kind in STDLIB_COMPONENTS:
+                return STDLIB_COMPONENTS[node.kind](self, node, env, path, scope_path)
             raise UnsupportedYet(f"component `{node.kind}` (not defined in "
                                  f"this file — stdlib/Openly)", "Stage 3/4",
                                  node.line_no)
@@ -149,9 +172,45 @@ class SceneBuilder:
         self._resolve_props(node, sn, env)
         for ev in node.events:
             sn.events[ev.name] = (ev, scope_path, dict(extra))
-        sn.children = self._build_block(_visual(node.children), sc, scope_path,
-                                        extra, path, slot_children)
+        self._bind_value(node, sn, env, scope_path, extra)
+
+        if node.kind == "scene3d":
+            # Prototype: a labeled 3D viewport placeholder. Its AST children
+            # (camera/light/model3d/parts) are engine data, not 2D scenes.
+            for ch in node.children:
+                if isinstance(ch, Node) and ch.kind == "model3d":
+                    sn.text = ch.content or sn.text
+            return [sn]
+
+        # Scoped derivations that ARE layout inputs (grid `columns is …`)
+        for ch in node.children:
+            if isinstance(ch, DerivedDecl):
+                sn.props.setdefault(ch.name, evaluate_text(
+                    ch.expr, env, self.program.kinds, ch.line_no))
+
+        self._sizes.append(_child_size(sn, self._sizes[-1]))
+        try:
+            sn.children = self._build_block(_visual(node.children), sc, scope_path,
+                                            extra, path, slot_children)
+        finally:
+            self._sizes.pop()
         return [sn]
+
+    def _bind_value(self, node, sn, env, scope_path, extra):
+        bind = node.prop("bind")
+        if bind is None:
+            return
+        target = bind.value.strip()
+        sn.bind = (target, scope_path, dict(extra))
+        try:
+            val = evaluate_text(target, env, self.program.kinds, node.line_no)
+        except PlainError:
+            val = None
+        if node.kind == "input":
+            from .expr import display
+            sn.text = display(val) if val is not None else ""
+        elif node.kind == "toggle":
+            sn.props["_on"] = bool(val)
 
     def _expand_component(self, call: Node, comp, caller_sc, caller_scope_path,
                           caller_env, path, extra):
@@ -321,6 +380,65 @@ def _visual(stmts):
     return [s for s in stmts
             if isinstance(s, (Node, IfNode, ForNode, WhenNode, RawStmt,
                               DerivedDecl))]
+
+
+def _match_branch(subject, when_node):
+    """Match a resource/result tuple against `is` branches.
+    Returns (branch, payload_name|None, payload)."""
+    if isinstance(subject, tuple) and len(subject) == 2:
+        tag, payload = subject
+    else:
+        tag, payload = "ready", subject
+    for br in when_node.branches:
+        parts = br.pattern.split()
+        if parts and parts[0] == tag:
+            return br, (parts[1] if len(parts) > 1 else None), payload
+    return None, None, None
+
+
+def _child_size(sn, avail):
+    """Available size for a node's children: own size spec + padding."""
+    w, h = avail
+    spec = sn.props.get("width") or {}
+    if isinstance(spec, dict):
+        if spec.get("mode") == "fixed":
+            try:
+                w = float(str(spec.get("value")).rstrip("%")) * (w / 100 if str(spec.get("value")).endswith("%") else 1)
+            except ValueError:
+                pass
+        if spec.get("max"):
+            try:
+                mx = str(spec["max"])
+                w = min(w, float(mx.rstrip("%")) * (w / 100 if mx.endswith("%") else 1))
+            except ValueError:
+                pass
+    pad = sn.props.get("padding") or []
+    if len(pad) == 1:
+        w, h = w - 2 * pad[0], h - 2 * pad[0]
+    elif len(pad) >= 2:
+        w, h = w - 2 * pad[1], h - 2 * pad[0]
+    return (max(w, 0.0), max(h, 0.0))
+
+
+def _stdlib_error_box(builder, node, env, path, scope_path):
+    msg = builder._node_text(node, env)
+    box = SceneNode(kind="box", source_line=node.line_no, path=path,
+                    scope_path=scope_path,
+                    props={"background": "danger-soft", "corners": 10.0,
+                           "padding": [14.0, 16.0]})
+    txt = SceneNode(kind="text", source_line=node.line_no, path=path + "/0",
+                    scope_path=scope_path, text=f"⚠ {msg}",
+                    props={"color": "danger", "size": 15.0})
+    box.children = [txt]
+    return [box]
+
+
+# Tiny stdlib surface that ships with the runtime (Doc 01 §6.1) — grows
+# toward the full control set; each entry is implemented against the same
+# scene primitives user components get.
+STDLIB_COMPONENTS = {
+    "ErrorBox": _stdlib_error_box,
+}
 
 
 def call_scope_path(sc) -> str:

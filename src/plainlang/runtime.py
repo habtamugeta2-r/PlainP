@@ -11,11 +11,13 @@ state dict, initialized from its StateDecls on first use.
 """
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 from .ast_nodes import (
-    ActionDecl, AssignStmt, DerivedDecl, IfNode, RawStmt, ResourceDecl,
-    StateDecl,
+    ActionDecl, AssignStmt, DerivedDecl, IfNode, KeepDecl, RawStmt,
+    ResourceDecl, StateDecl,
 )
 from .errors import PlainError, UnsupportedYet
 from .expr import evaluate_text, execute_assign, truthy
@@ -25,15 +27,48 @@ class _Return(Exception):
     pass
 
 
+class Navigate(Exception):
+    """`go to Page(args)` / `go back` — unwinds to App, which owns the stack."""
+
+    def __init__(self, page_name=None, args=None, back=False):
+        super().__init__(page_name or "back")
+        self.page_name = page_name
+        self.args = args or []
+        self.back = back
+
+
+# Resource values are ("ready", data) | ("failed", reason) | ("loading", None)
+def _resource_match(decl: ResourceDecl, providers: dict):
+    """Prototype data providers (sidecar JSON / tests). Matching: exact,
+    then {param}-collapsed, then last path segment."""
+    if not providers:
+        return ("failed",
+                "no data source is connected in this prototype yet")
+    source = decl.source.strip().strip('"')
+    candidates = [source]
+    collapsed = re.sub(r"\{[^}]*\}", "*", source)
+    candidates.append(collapsed)
+    candidates.append(source.rstrip("/").rsplit("/", 1)[-1])
+    for key, val in providers.items():
+        kcol = re.sub(r"\{[^}]*\}", "*", str(key))
+        if key in candidates or kcol in candidates or str(key).rsplit("/", 1)[-1] == candidates[-1]:
+            if isinstance(val, dict) and val.get("_failed"):
+                return ("failed", str(val["_failed"]))
+            return ("ready", val)
+    return ("failed", "no data source is connected in this prototype yet")
+
+
 class Scope:
     """Bindings for one page/component instance."""
 
     def __init__(self, decl_owner):
         self.decl_owner = decl_owner          # Page or Component AST
+        self.path: str = ""
         self.state: dict = {}
         self.derived: list[DerivedDecl] = []
         self.actions: dict[str, ActionDecl] = {}
         self.resources: dict[str, ResourceDecl] = {}
+        self.keeps: set[str] = set()
         self.initialized = False
 
     def declarations(self):
@@ -41,17 +76,52 @@ class Scope:
 
 
 class Runtime:
-    def __init__(self, program):
+    def __init__(self, program, providers: dict | None = None,
+                 persist_path: str | Path | None = None):
         self.program = program
         self.scopes: dict[str, Scope] = {}
         self.shared: dict = {}
         self._shared_ready = False
+        self.providers = providers or {}
+        self.persist_path = Path(persist_path) if persist_path else None
+        self._store: dict | None = None
+
+    # -- persistence (`keep`) ---------------------------------------------
+    @property
+    def store(self) -> dict:
+        if self._store is None:
+            self._store = {}
+            if self.persist_path and self.persist_path.exists():
+                try:
+                    self._store = json.loads(
+                        self.persist_path.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    self._store = {}
+        return self._store
+
+    def save_kept(self):
+        if not self.persist_path:
+            return
+        for sc in self.scopes.values():
+            for name in sc.keeps:
+                if name in sc.state:
+                    self.store.setdefault(sc.path, {})[name] = sc.state[name]
+        self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+        self.persist_path.write_text(
+            json.dumps(self.store, ensure_ascii=False, indent=1, default=str),
+            encoding="utf-8")
+
+    def clear_persisted(self):
+        self._store = {}
+        if self.persist_path and self.persist_path.exists():
+            self.persist_path.unlink()
 
     # -- scopes ---------------------------------------------------------
     def scope(self, path: str, decl_owner) -> Scope:
         sc = self.scopes.get(path)
         if sc is None:
             sc = Scope(decl_owner)
+            sc.path = path
             self.scopes[path] = sc
             self._init_scope(sc)
         elif sc.decl_owner is not decl_owner:
@@ -82,6 +152,13 @@ class Runtime:
                 sc.actions[stmt.name] = stmt
             elif isinstance(stmt, ResourceDecl):
                 sc.resources[stmt.name] = stmt
+            elif isinstance(stmt, KeepDecl):
+                sc.keeps.add(stmt.name)
+        if not preserve and self.persist_path:
+            saved = self.store.get(sc.path, {})
+            for name in sc.keeps:
+                if name in saved:
+                    sc.state[name] = saved[name]
         if preserve:
             for name in list(sc.state):
                 if name not in declared:
@@ -96,11 +173,15 @@ class Runtime:
             if isinstance(stmt, StateDecl):
                 self.shared[stmt.name] = evaluate_text(
                     stmt.expr, dict(self.shared), self.program.kinds, stmt.line_no)
+            elif isinstance(stmt, ResourceDecl):
+                self.shared[stmt.name] = _resource_match(stmt, self.providers)
 
     def env_for(self, sc: Scope, extra: dict | None = None) -> dict:
         """Read-view: shared + state + derived (recomputed) + locals."""
         env = dict(self.shared)
         env.update(sc.state)
+        for name, decl in sc.resources.items():
+            env[name] = _resource_match(decl, self.providers)
         if extra:
             env.update(extra)
         for d in sc.derived:  # decl order: later may use earlier
@@ -167,6 +248,29 @@ class Runtime:
         execute_assign(target, op, expr_src, env, write,
                        self.program.kinds, line_no)
 
+    def set_value(self, sc: Scope, target: str, value, extra=None, line_no=None):
+        """Write a Python value to a bound target (`draft`, `task.done`)."""
+        parts = target.split(".")
+        if len(parts) == 1:
+            root = parts[0]
+            if root in self.shared and root not in sc.state:
+                self.shared[root] = value
+            else:
+                sc.state[root] = value
+            self.save_kept()
+            return
+        env = self.env_for(sc, extra)
+        obj = env.get(parts[0])
+        if not isinstance(obj, dict):
+            raise PlainError(f"`{parts[0]}` isn't a record, so it has no "
+                             f"parts to change.", line_no=line_no)
+        obj[parts[-1]] = value
+        self.save_kept()
+
+    def get_value(self, sc: Scope, target: str, extra=None, line_no=None):
+        env = self.env_for(sc, extra)
+        return evaluate_text(target, env, self.program.kinds, line_no)
+
     def exec_stmt(self, sc: Scope, stmt, extra: dict | None = None):
         if isinstance(stmt, AssignStmt):
             # new names inside actions are locals unless known state/shared
@@ -216,8 +320,25 @@ class Runtime:
             else:
                 target[name] = [x for x in lst if x is not value and x != value]
             return
-        if text.startswith("go to") or text == "go back":
-            raise UnsupportedYet("navigation", "Stage 3", stmt.line_no, text)
+        if text == "go back":
+            raise Navigate(back=True)
+        m = re.match(r"^go to\s+(.+)$", text)
+        if m:
+            dest = m.group(1).strip()
+            call = re.match(r"^([A-Z][\w-]*)(?:\((.*)\))?$", dest)
+            env = self.env_for(sc, extra)
+            if call:
+                args = []
+                if call.group(2):
+                    args = [evaluate_text(a.strip(), env, self.program.kinds,
+                                          stmt.line_no)
+                            for a in _split_args(call.group(2))]
+                raise Navigate(call.group(1), args)
+            # `go to link.page` — destination is a value naming the page
+            name = evaluate_text(dest, env, self.program.kinds, stmt.line_no)
+            if isinstance(name, dict):
+                name = name.get("page") or name.get("title")
+            raise Navigate(str(name), [])
         if text.startswith("show toast") or " then " in text:
             raise UnsupportedYet("toasts / `then` chains", "Stage 3", stmt.line_no, text)
         if re.match(r"^[\w-]+(\(.*\))?$", text):

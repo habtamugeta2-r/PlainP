@@ -103,14 +103,15 @@ edit **and keeps the app's state**.
 
 ## Status
 
-Blueprint v0.1 **plus a working Stage-1 reference prototype** (Doc 06):
-the parser accepts all of `examples/*.plain` byte for byte, the counter and
-todo examples run interactively, and 8 grammar ambiguities the blueprint
-left open have been resolved by implementation and recorded as spec
-amendments (Doc 06 §5). The examples remain normative — every disagreement
-found so far was fixed in the *implementation/spec*, never by editing an
-example. Plainness is tested by reading (and now, running) real programs,
-not grammar diagrams.
+Blueprint v0.1 **plus a working Stage 1–3 reference prototype** (Doc 06):
+all 9 examples render and interact in the preview (type into Todo, resize
+past the navbar breakpoint, search/sort the data table, navigate
+Gallery→Detail→Back, configure the chair), state marked `keep` survives
+restarts, and 10 grammar ambiguities the blueprint left open have been
+resolved by implementation and recorded as spec amendments (Doc 06 §5).
+The examples remain normative — every disagreement found so far was fixed
+in the *implementation/spec*, never by editing an example. Plainness is
+tested by reading (and now, running) real programs.
 
 ## License
 

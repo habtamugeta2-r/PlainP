@@ -174,6 +174,9 @@ class _Parser:
                 start = self.additive()
                 self.expect_name("take")
                 ops.append(("slice", start, self.additive()))
+            elif w == "ready-or":
+                self.next()
+                ops.append(("ready-or", self.additive()))
             elif w == "clamped":
                 self.next()
                 lo = self.additive()
@@ -346,6 +349,12 @@ def evaluate(node, env: dict, kinds: dict, line_no=None):
         name = node[1]
         if name in env:
             return env[name]
+        if name.endswith("-link"):
+            # Page-link literal (Doc 06 G-9): `Home-link` is the link to the
+            # Home page — {title, page}. Lets nav data be plain values.
+            stem = name[: -len("-link")]
+            return {"_kind": "Link", "title": stem.replace("-", " ").title(),
+                    "page": stem[:1].upper() + stem[1:]}
         raise PlainError(
             f"`{name}` doesn't mean anything here yet. Did you forget to "
             f"create it above with `{name} = …`?", line_no=line_no)
@@ -455,6 +464,12 @@ def _eval_pipe(node, env, kinds, line_no):
             start = int(evaluate(op[1], env, kinds, line_no))
             n = int(evaluate(op[2], env, kinds, line_no))
             val = (val or [])[start:start + n]
+        elif name == "ready-or":
+            default = evaluate(op[1], env, kinds, line_no)
+            if isinstance(val, tuple) and len(val) == 2 and val[0] in ("ready", "failed", "loading"):
+                val = val[1] if val[0] == "ready" else default
+            elif val is None:
+                val = default
         elif name == "clamp":
             lo = evaluate(op[1], env, kinds, line_no)
             hi = evaluate(op[2], env, kinds, line_no)
