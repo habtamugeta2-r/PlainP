@@ -5,9 +5,11 @@
 //! suite); this crate must match it test-for-test. See docs/06 §7.
 
 pub mod ast;
+pub mod checker;
 pub mod errors;
 pub mod parser;
 pub mod tokens;
 
+pub use checker::check_program;
 pub use errors::PlainError;
 pub use parser::{block_tree, parse_program};

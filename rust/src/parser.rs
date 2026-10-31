@@ -11,45 +11,48 @@ use crate::tokens::{detokenize, strip_comment, tokenize, Tok, TokKind};
 
 // ---- vocabulary (single source of truth, shared with future checker) -------
 
+pub const NODE_KINDS: &[&str] = &[
+    "column", "row", "stack", "grid", "scroll", "box", "text", "image", "video", "audio",
+    "canvas", "button", "input", "textarea", "toggle", "slider", "select", "link",
+    "divider", "spacer", "spinner", "table", "header", "cell", "scene3d", "model3d",
+    "camera", "light", "children", "material", "part",
+];
+
 pub fn is_node_kind(w: &str) -> bool {
-    matches!(
-        w,
-        "column" | "row" | "stack" | "grid" | "scroll" | "box" | "text" | "image"
-            | "video" | "audio" | "canvas" | "button" | "input" | "textarea" | "toggle"
-            | "slider" | "select" | "link" | "divider" | "spacer" | "spinner" | "table"
-            | "header" | "cell" | "scene3d" | "model3d" | "camera" | "light" | "children"
-            | "material" | "part"
-    )
+    NODE_KINDS.contains(&w)
 }
+
+pub const VALUE_PROPS_1: &[&str] = &[
+    "gap", "size", "color", "background", "corners", "align", "spread", "label",
+    "placeholder", "aspect", "id", "shape", "fit", "weight", "font", "opacity", "enter",
+    "exit", "shadow", "bind", "autocomplete", "kind", "columns", "level", "lines", "ring",
+];
 
 fn is_value_prop1(w: &str) -> bool {
-    matches!(
-        w,
-        "gap" | "size" | "color" | "background" | "corners" | "align" | "spread"
-            | "label" | "placeholder" | "aspect" | "id" | "shape" | "fit" | "weight"
-            | "font" | "opacity" | "enter" | "exit" | "shadow" | "bind" | "autocomplete"
-            | "kind" | "columns" | "level" | "lines" | "ring"
-    )
+    VALUE_PROPS_1.contains(&w)
 }
+
+pub const VALUE_PROPS_EXPR: &[&str] = &["error", "value", "scale", "rotate-y", "rotate", "retry"];
 
 fn is_value_prop_expr(w: &str) -> bool {
-    matches!(w, "error" | "value" | "scale" | "rotate-y" | "rotate" | "retry")
+    VALUE_PROPS_EXPR.contains(&w)
 }
+
+pub const SPECIAL_PROPS: &[&str] = &[
+    "width", "height", "padding", "animate", "look", "at", "look-at", "angle", "stagger",
+];
 
 fn is_special_prop(w: &str) -> bool {
-    matches!(
-        w,
-        "width" | "height" | "padding" | "animate" | "look" | "at" | "look-at" | "angle" | "stagger"
-    )
+    SPECIAL_PROPS.contains(&w)
 }
 
+pub const FLAGS: &[&str] = &[
+    "bold", "plain", "primary", "grow", "center", "center-self", "strike", "secret",
+    "capitalize", "disabled", "visible", "stick-to-bottom", "soft-shadows", "italic", "wrap",
+];
+
 pub fn is_flag(w: &str) -> bool {
-    matches!(
-        w,
-        "bold" | "plain" | "primary" | "grow" | "center" | "center-self" | "strike"
-            | "secret" | "capitalize" | "disabled" | "visible" | "stick-to-bottom"
-            | "soft-shadows" | "italic" | "wrap"
-    )
+    FLAGS.contains(&w)
 }
 
 fn any_prop_start(w: &str) -> bool {

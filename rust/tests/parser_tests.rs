@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use plainlang::ast::Stmt;
 use plainlang::tokens::{detokenize, strip_comment, tokenize, TokKind};
-use plainlang::{block_tree, parse_program};
+use plainlang::{block_tree, check_program, parse_program};
 
 fn examples_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples")
@@ -157,6 +157,80 @@ fn whole_corpus_parses() {
             !prog.pages.is_empty(),
             "{}: expected at least one page",
             path.display()
+        );
+    }
+}
+
+// ---- checker parity (tests/test_stage1.py TestChecker + Stage-2 rules) ----
+
+fn check_renders(src: &str) -> Vec<String> {
+    check_program(&parse_program(src).unwrap())
+        .iter()
+        .map(|e| e.render())
+        .collect()
+}
+
+#[test]
+fn checker_empty_button_matches_spec_error() {
+    let msgs = check_renders("page Home at \"/\":\n  column:\n    button on tap save\n");
+    assert!(
+        msgs.iter().any(|m| m.contains("`button` needs something to show.")
+            && m.contains("Try: button \"Save\" on tap save")),
+        "{msgs:?}"
+    );
+}
+
+#[test]
+fn checker_misspelled_node_suggests() {
+    let msgs = check_renders("page Home at \"/\":\n  colunm:\n    text \"hi\"\n");
+    assert!(msgs.iter().any(|m| m.contains("did you mean `column`")), "{msgs:?}");
+}
+
+#[test]
+fn checker_misspelled_property_suggests_once() {
+    let msgs = check_renders("page Home at \"/\":\n  column:\n    text \"hi\" colour red\n");
+    let colour: Vec<&String> = msgs.iter().filter(|m| m.contains("colour")).collect();
+    assert_eq!(colour.len(), 1, "{msgs:?}");
+    assert!(colour[0].contains("did you mean `color`"), "{msgs:?}");
+}
+
+#[test]
+fn checker_page_needs_address() {
+    let msgs = check_renders("page Home:\n  column:\n    text \"hi\"\n");
+    assert!(msgs.iter().any(|m| m.contains("no address")), "{msgs:?}");
+}
+
+#[test]
+fn checker_unknown_action_and_look() {
+    let msgs = check_renders(
+        "page Home at \"/\":\n  column:\n    button \"Go\" on tap fly\n    text \"x\" look fancy\n",
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("no action called `fly`")),
+        "{msgs:?}"
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("no look called `fancy`")),
+        "{msgs:?}"
+    );
+}
+
+#[test]
+fn checker_corpus_is_clean() {
+    let mut names: Vec<PathBuf> = std::fs::read_dir(examples_dir())
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().map(|x| x == "plain").unwrap_or(false))
+        .collect();
+    names.sort();
+    for path in names {
+        let src = std::fs::read_to_string(&path).unwrap();
+        let errs = check_program(&parse_program(&src).unwrap());
+        assert!(
+            errs.is_empty(),
+            "{}: {:?}",
+            path.display(),
+            errs.iter().map(|e| e.render()).collect::<Vec<_>>()
         );
     }
 }

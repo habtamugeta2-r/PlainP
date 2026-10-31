@@ -3,7 +3,7 @@
 //! the Python oracle CLI (`./plain`) remains feature-complete meanwhile.
 use std::process::ExitCode;
 
-use plainlang::{block_tree, parse_program};
+use plainlang::{block_tree, check_program, parse_program};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -14,6 +14,14 @@ fn main() -> ExitCode {
                 match std::fs::read_to_string(path) {
                     Ok(src) => match parse_program(&src) {
                         Ok(prog) => {
+                            let errs = check_program(&prog);
+                            if !errs.is_empty() {
+                                bad += 1;
+                                for e in &errs {
+                                    eprintln!("{path}:\n{}\n", e.render());
+                                }
+                                continue;
+                            }
                             let pages: Vec<&str> = prog.page_names();
                             let comps: Vec<&str> =
                                 prog.components.iter().map(|c| c.name.as_str()).collect();
