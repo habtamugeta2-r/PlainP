@@ -18,6 +18,7 @@ If you are new to the project, read in the order below—each document builds di
 | **05** | [`05-decisions-roadmap-validation.md`](05-decisions-roadmap-validation.md) | **ADRs & Master Plan** | Architecture Decision Records (`ADR-1` Python oracle + Rust engine through `ADR-8`), risk register, open RFCs, and the 5-stage validation roadmap. |
 | **06** | [`06-stage1-prototype.md`](06-stage1-prototype.md) | **Implementation Reality** | Exact guide to what runs today in `src/plainlang/` and `rust/`, settled grammar amendments **`G-1…G-10`**, M0 & M1 Tranches 1–2 notes, and the slice-by-slice Rust port plan. |
 | **07** | [`07-workstream-backlog.md`](07-workstream-backlog.md) | **272-Item Reference** | Complete subsystem checklist (`P0-*` through `PLAT-*`) across Stages 1–5 with shipped checkboxes and Linear `HAB-*` cross-references. |
+| **08** | [`08-plain-unified-language.md`](08-plain-unified-language.md) | **Proposed function-based Plain** | Unified core language and UI design, complete illustrative programs, runtime model, and explicit prototype compatibility caveats. |
 
 ---
 

@@ -40,6 +40,13 @@ of what you see* — is the entire design constraint of this platform.
 | **Openly** | — | The package registry. "Share openly." |
 | **Looking Glass** | `glass` | The dev tools / inspector. "See through your app." |
 
+## Proposed function-based Plain
+
+See [`docs/08-plain-unified-language.md`](docs/08-plain-unified-language.md)
+for a new, function-based language and UI specification. It is a **proposal**,
+not the syntax accepted by the current prototype; it differs deliberately from
+the existing node-line PL draft and examples.
+
 ## Read the blueprint (In-to-Out order)
 
 This repository is the architecture blueprint, organized by the **In-to-Out
