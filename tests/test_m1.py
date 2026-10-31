@@ -5,10 +5,14 @@ Tests use a local HTTP server only (NET-10: no external network in CI).
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
+from plainlang.checker import check_program
+from plainlang.parser import parse_program
 from plainlang.render import App
 
 class _Handler(BaseHTTPRequestHandler):
@@ -35,6 +39,16 @@ class _Handler(BaseHTTPRequestHandler):
         type(self).requests += 1
         if self.path == "/data":
             return self._json({"name": "Ada", "role": "engineer"})
+        if self.path == "/redirect-same":
+            self.send_response(302)
+            self.send_header("Location", "/data")
+            self.end_headers()
+            return
+        if self.path == "/redirect-cross":
+            self.send_response(302)
+            self.send_header("Location", "http://evil.example/steal")
+            self.end_headers()
+            return
         if self.path == "/flaky":
             type(self).flaky_hits += 1
             if type(self).flaky_hits < 3:
@@ -89,7 +103,8 @@ class TestM1Requests(unittest.TestCase):
         return app
 
     def test_fetch_result_and_when_ok(self):
-        app = App(f'''page Home at "/":
+        app = App(f'''needs network 127.0.0.1
+page Home at "/":
   got = "loading"
   to load:
     result = fetch "{self.base}/data"
@@ -105,7 +120,8 @@ class TestM1Requests(unittest.TestCase):
         self.assertEqual(app.runtime.last_request["method"], "GET")
 
     def test_post_with_body_returns_result(self):
-        app = App(f'''page Home at "/":
+        app = App(f'''needs network 127.0.0.1
+page Home at "/":
   name = "Ada"
   got = "none"
   to save:
@@ -123,7 +139,8 @@ class TestM1Requests(unittest.TestCase):
 
     def test_get_retries_transient_failures(self):
         _Handler.flaky_hits = 0
-        app = App(f'''page Home at "/":
+        app = App(f'''needs network 127.0.0.1
+page Home at "/":
   got = "loading"
   to load:
     result = fetch "{self.base}/flaky"
@@ -141,7 +158,8 @@ class TestM1Requests(unittest.TestCase):
     def test_post_is_not_retried(self):
         # A blind POST replay can duplicate a write; offline queueing is NET-04.
         _Handler.post_flaky_hits = 0
-        app = App(f'''page Home at "/":
+        app = App(f'''needs network 127.0.0.1
+page Home at "/":
   got = "loading"
   to save:
     result = post "{self.base}/flaky-post" body "x"
@@ -223,7 +241,8 @@ page Done(account) at "/done":
 
     def test_http_resource_caches_until_refresh(self):
         _Handler.requests = 0
-        app = App(f'''page Home at "/":
+        app = App(f'''needs network 127.0.0.1
+page Home at "/":
   data from "{self.base}/data"
   to reload:
     refresh data
@@ -299,7 +318,8 @@ page Done(account) at "/done":
     def test_refresh_revalidates_with_etag(self):
         _Handler.etag_hits = 0
         _Handler.etag_conditional = 0
-        app = App(f'''page Home at "/":
+        app = App(f'''needs network 127.0.0.1
+page Home at "/":
   data from "{self.base}/etag"
   to reload:
     refresh data
@@ -351,7 +371,8 @@ page Done(account) at "/done":
         self.assertIn("no resource called `nope`", caught.exception.message)
 
     def test_http_error_becomes_failed(self):
-        app = App(f'''page Home at "/":
+        app = App(f'''needs network 127.0.0.1
+page Home at "/":
   problem = nothing
   to load:
     result = fetch "{self.base}/missing"
@@ -364,6 +385,113 @@ page Done(account) at "/done":
         self.tap_button(app, "Load")
         self.assertEqual(app.runtime.scopes["page:Home"].state["problem"],
                          "server 404")
+
+    def test_needs_parses_structured_capabilities(self):
+        src = (Path(__file__).resolve().parents[1] / "examples/04-chat.plain").read_text(
+            encoding="utf-8")
+        prog = parse_program(src)
+        self.assertEqual(prog.needs, ["network chat.example.com"])
+        self.assertEqual([(c.kind, c.target) for c in prog.capabilities],
+                         [("network", "chat.example.com")])
+        self.assertEqual(prog.allows_network_url("https://chat.example.com/rooms"),
+                         (True, "chat.example.com"))
+        self.assertEqual(prog.allows_network_url("https://evil.example.com/rooms"),
+                         (False, "evil.example.com"))
+
+        multi = parse_program(
+            'needs network chat.example.com, notifications\n'
+            'page Home at "/":\n  column:\n    text "hi"\n')
+        self.assertEqual(multi.needs, ["network chat.example.com", "notifications"])
+        self.assertEqual([(c.kind, c.target) for c in multi.capabilities],
+                         [("network", "chat.example.com"), ("notifications", None)])
+
+    def test_checker_rejects_missing_and_invalid_capabilities(self):
+        def errs(src: str) -> list[str]:
+            return [e.render() for e in check_program(parse_program(src))]
+
+        no_storage = errs(
+            'page Home at "/":\n  tasks = []\n  keep tasks\n  column:\n    text "hi"\n')
+        self.assertTrue(any("`keep tasks` saves data on this device" in m
+                            and "needs storage" in m for m in no_storage))
+
+        no_net = errs(
+            'page Home at "/":\n  feed from "https://api.example.com/feed"\n'
+            '  column:\n    text "hi"\n')
+        self.assertTrue(any("`api.example.com`, which isn't listed in `needs`" in m
+                            for m in no_net))
+
+        bare_net = errs('needs network\npage Home at "/":\n  column:\n    text "hi"\n')
+        self.assertTrue(any("`needs network` must name the host" in m for m in bare_net))
+
+        wildcard = errs(
+            'needs network *.example.com\npage Home at "/":\n  column:\n    text "hi"\n')
+        self.assertTrue(any("cannot use a wildcard" in m for m in wildcard))
+
+        full_url = errs(
+            'needs network https://api.example.com/v1\n'
+            'page Home at "/":\n  column:\n    text "hi"\n')
+        self.assertTrue(any("takes a host name, not a full URL" in m for m in full_url))
+
+    def test_runtime_default_deny_blocks_dynamic_url_and_cross_host_redirect(self):
+        # Dynamic URL bypasses literal static check, caught by runtime default-deny.
+        app_denied = App(f'''page Home at "/":
+  target = "{self.base}/data"
+  got = "idle"
+  to load:
+    result = fetch target
+    when result:
+      is ok value: got = value.name
+      is failed why: got = why as sentence
+  column:
+    button "Load" on tap load
+''')
+        self.tap_button(app_denied, "Load")
+        self.assertIn("denied: needs network 127.0.0.1",
+                      app_denied.runtime.scopes["page:Home"].state["got"])
+
+        # Same-host 302 redirect succeeds when 127.0.0.1 is declared.
+        app_same = App(f'''needs network 127.0.0.1
+page Home at "/":
+  got = "idle"
+  to load:
+    result = fetch "{self.base}/redirect-same"
+    when result:
+      is ok value: got = value.name
+      is failed why: got = why as sentence
+  column:
+    button "Load" on tap load
+''')
+        self.tap_button(app_same, "Load")
+        self.assertEqual(app_same.runtime.scopes["page:Home"].state["got"], "Ada")
+
+        # Cross-host 302 redirect to evil.example is blocked on the first hop.
+        _Handler.requests = 0
+        app_cross = App(f'''needs network 127.0.0.1
+page Home at "/":
+  got = "idle"
+  to load:
+    result = fetch "{self.base}/redirect-cross"
+    when result:
+      is ok value: got = "leaked"
+      is failed why: got = why as sentence
+  column:
+    button "Load" on tap load
+''')
+        self.tap_button(app_cross, "Load")
+        self.assertEqual(app_cross.runtime.scopes["page:Home"].state["got"],
+                         "denied: needs network evil.example")
+        self.assertEqual(_Handler.requests, 1)
+
+    def test_persist_only_writes_when_needs_storage_and_keep_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_file = Path(tmp) / "state.json"
+            app = App('''page Home at "/":
+  count = 0
+  column:
+    button "Bump" on tap: count += 1
+''', persist_path=store_file)
+            self.tap_button(app, "Bump")
+            self.assertFalse(store_file.exists())
 
 
 if __name__ == "__main__":

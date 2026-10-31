@@ -20,8 +20,8 @@ import re
 
 from . import tokens as T
 from .ast_nodes import (
-    ActionDecl, AssignStmt, Component, DerivedDecl, Event, Flag, ForNode,
-    IfNode, KeepDecl, KindDecl, KindField, Line, LookDecl, Node, Page,
+    ActionDecl, AssignStmt, Capability, Component, DerivedDecl, Event, Flag,
+    ForNode, IfNode, KeepDecl, KindDecl, KindField, Line, LookDecl, Node, Page,
     Program, Prop, RawStmt, ResourceDecl, StateDecl, WhenBranch, WhenNode,
 )
 from .errors import PlainError
@@ -118,7 +118,7 @@ def block_tree(source: str) -> list[Line]:
 # ---- stage 3: classification ---------------------------------------------------
 
 _DECL_RE = {
-    "needs": re.compile(r"^needs\s+(.*)$"),
+    "needs": re.compile(r"^needs(?:\s+(.*))?$"),
     "kind": re.compile(r"^kind\s+([A-Z][\w-]*)\s*:$"),
     "component": re.compile(r"^component\s+([A-Z][\w-]*)(?:\(([^)]*)\))?\s*:$"),
     "page": re.compile(r"^page\s+([A-Z][\w-]*)(?:\(([^)]*)\))?(?:\s+at\s+\"([^\"]*)\")?\s*:$"),
@@ -159,6 +159,34 @@ def _defaults(s: str | None) -> dict[str, str]:
             if default is not None}
 
 
+def _parse_capabilities(rest: str | None, ln: Line) -> list[Capability]:
+    """Parse `needs network api.example.com, storage` into structured items."""
+    raw = (rest or "").strip()
+    if not raw:
+        return [Capability("", None, ln.no, 1, ln.text, len(ln.text))]
+    out: list[Capability] = []
+    search_from = ln.text.find(raw)
+    if search_from < 0:
+        search_from = 0
+    for part in raw.split(","):
+        clause = part.strip()
+        if not clause:
+            continue
+        pos = ln.text.find(clause, search_from)
+        if pos >= 0:
+            col = pos + 1
+            search_from = pos + len(clause)
+        else:
+            col = 1
+        if clause == "nothing":
+            continue
+        words = clause.split()
+        kind = words[0]
+        target = " ".join(words[1:]) if len(words) > 1 else None
+        out.append(Capability(kind, target, ln.no, col, ln.text, len(clause)))
+    return out
+
+
 def parse_program(source: str) -> Program:
     roots = block_tree(source)
     # Pre-scan component signatures so call sites bind named args correctly.
@@ -172,7 +200,9 @@ def parse_program(source: str) -> Program:
     for ln in roots:
         t = ln.text
         if m := _DECL_RE["needs"].match(t):
-            prog.needs += [w.strip() for w in m.group(1).replace(",", " ").split()]
+            caps = _parse_capabilities(m.group(1), ln)
+            prog.capabilities.extend(caps)
+            prog.needs.extend(c.label() for c in caps if c.kind)
         elif m := _DECL_RE["kind"].match(t):
             fields = []
             for ch in ln.children:
@@ -487,10 +517,6 @@ class _Parser:
             t = toks[i]
             if t.kind == T.COMMA or t.kind == T.COLON:
                 i += 1
-                continue
-            if t.kind == T.NAME and t.text == "on" and node.kind != "box":
-                ev, i = self._event_from_tokens(toks, i, ln)
-                node.events.append(ev)
                 continue
             if t.kind == T.NAME and t.text == "on":
                 ev, i = self._event_from_tokens(toks, i, ln)

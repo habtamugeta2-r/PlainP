@@ -189,9 +189,73 @@ pub struct Page {
     pub line_no: usize,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Capability {
+    pub kind: String,
+    pub target: Option<String>,
+    pub line_no: usize,
+    pub raw: String,
+}
+
+impl Capability {
+    pub fn label(&self) -> String {
+        match &self.target {
+            Some(t) if !t.is_empty() => format!("{} {}", self.kind, t),
+            _ => self.kind.clone(),
+        }
+    }
+}
+
+fn parse_http_host(url: &str) -> Result<(String, Option<u16>), String> {
+    let Some((scheme_raw, rest)) = url.split_once("://") else {
+        return Err(url.to_string());
+    };
+    let scheme = scheme_raw.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("scheme `{scheme}`"));
+    }
+    let end = rest.find(&['/', '?', '#'][..]).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    let hostport = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, hp)| hp);
+    if hostport.is_empty() {
+        return Err(url.to_string());
+    }
+    if hostport.starts_with('[') {
+        let Some(close) = hostport.find(']') else {
+            return Err(hostport.to_string());
+        };
+        let host = hostport[1..close].to_ascii_lowercase();
+        let tail = &hostport[close + 1..];
+        if tail.is_empty() {
+            return Ok((host, None));
+        }
+        if let Some(p) = tail.strip_prefix(':') {
+            return match p.parse::<u16>() {
+                Ok(port) => Ok((host, Some(port))),
+                Err(_) => Err(host),
+            };
+        }
+        return Err(host);
+    }
+    if let Some((h, p)) = hostport.split_once(':') {
+        let host = h.to_ascii_lowercase();
+        if host.is_empty() {
+            return Err(url.to_string());
+        }
+        return match p.parse::<u16>() {
+            Ok(port) => Ok((host, Some(port))),
+            Err(_) => Err(host),
+        };
+    }
+    Ok((hostport.to_ascii_lowercase(), None))
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Program {
     pub needs: Vec<String>,
+    pub capabilities: Vec<Capability>,
     pub kinds: Vec<KindDecl>,
     pub components: Vec<Component>,
     pub pages: Vec<Page>,
@@ -204,6 +268,36 @@ pub struct Program {
 impl Program {
     pub fn first_page(&self) -> Option<&Page> {
         self.pages.first()
+    }
+    pub fn has_capability(&self, kind: &str) -> bool {
+        self.capabilities.iter().any(|c| c.kind == kind)
+    }
+    pub fn allows_network_url(&self, url: &str) -> (bool, String) {
+        let (host, port) = match parse_http_host(url) {
+            Ok(v) => v,
+            Err(reason) => return (false, reason),
+        };
+        let host_port = match port {
+            Some(p) => format!("{host}:{p}"),
+            None => host.clone(),
+        };
+        for cap in &self.capabilities {
+            if cap.kind != "network" {
+                continue;
+            }
+            let Some(raw_tgt) = &cap.target else {
+                continue;
+            };
+            let tgt = raw_tgt.trim().to_ascii_lowercase();
+            if tgt.contains(':') && !tgt.ends_with(']') {
+                if tgt == host_port {
+                    return (true, host_port);
+                }
+            } else if tgt.trim_matches(&['[', ']'][..]) == host {
+                return (true, host_port);
+            }
+        }
+        (false, host_port)
     }
     pub fn page(&self, name: &str) -> Option<&Page> {
         self.pages.iter().find(|p| p.name == name)

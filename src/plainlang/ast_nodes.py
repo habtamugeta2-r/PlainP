@@ -9,6 +9,7 @@ location; `col`/`raw` exist for carets and future Looking Glass source maps.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import urllib.parse
 
 
 @dataclass
@@ -254,9 +255,24 @@ class Page:
     raw: str = ""
 
 
+@dataclass(frozen=True)
+class Capability:
+    """A top-level `needs` capability grant (Doc 01 §5, Doc 03 §8)."""
+    kind: str                       # e.g. "network", "storage", "camera"
+    target: str | None = None       # host[:port] for `network`, lib for `native`
+    line_no: int = 0
+    col: int = 1
+    raw: str = ""
+    length: int = 1
+
+    def label(self) -> str:
+        return f"{self.kind} {self.target}" if self.target else self.kind
+
+
 @dataclass
 class Program:
     needs: list[str] = field(default_factory=list)
+    capabilities: list[Capability] = field(default_factory=list)
     kinds: dict = field(default_factory=dict)
     components: dict = field(default_factory=dict)
     pages: dict = field(default_factory=dict)
@@ -268,3 +284,31 @@ class Program:
 
     def first_page(self) -> Page | None:
         return next(iter(self.pages.values()), None)
+
+    def has_capability(self, kind: str) -> bool:
+        return any(c.kind == kind for c in self.capabilities)
+
+    def allows_network_url(self, url: str) -> tuple[bool, str]:
+        """Return `(allowed, host_or_reason)` for an outgoing URL."""
+        parsed = urllib.parse.urlsplit(url)
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in ("http", "https"):
+            return False, f"scheme `{scheme or 'unknown'}`"
+        if not parsed.hostname:
+            return False, url
+        host = parsed.hostname.lower()
+        try:
+            port = parsed.port
+        except ValueError:
+            return False, host
+        host_port = f"{host}:{port}" if port is not None else host
+        for cap in self.capabilities:
+            if cap.kind != "network" or not cap.target:
+                continue
+            tgt = cap.target.strip().lower()
+            if ":" in tgt and not tgt.endswith("]"):
+                if tgt == host_port:
+                    return True, host_port
+            elif tgt.strip("[]") == host:
+                return True, host_port
+        return False, host_port

@@ -371,12 +371,27 @@ try/catch thicket. `nothing` (absence, §7.2) is handled by matching or by
   data and must be matched/narrowed before use — the unsafe perimeter is
   visible in code review.
 
-## 8. Modules & standard library (answers D3/D4)
+## 8. Modules, capabilities & standard library (answers D3/D4, Doc 01 §5)
 
 ```plain
+needs network api.example.com, storage   # comma-separated capabilities; default-deny
+
 use "openly:@acme/charts@2"      # pinned + hashed automatically after
 use "./receipt-card.plain"       # first verified fetch (Doc 01 §5.3)
 ```
+- **Capabilities (`needs`) are structured and default-deny:**
+  - Unscoped capabilities: `storage`, `camera`, `microphone`, `location`,
+    `clipboard`, `notifications`, `gpu-compute` (or `needs nothing`).
+  - Scoped capabilities: `network <host[:port]>` (no blanket `needs network`,
+    no wildcards, no URL schemes/paths) and `native <lib>`.
+  - `keep <name>` requires `needs storage` (checked statically by `plain check`
+    and enforced at runtime before reading/writing `.plain/` state).
+  - Outbound `http(s)://` resources (`from`) and requests (`fetch` / `post`)
+    require a matching `needs network <host>` declaration on **both the initial
+    URL and every HTTP redirect hop**. Undeclared hosts fail `plain check` when
+    statically known and return `failed "denied: needs network <host>"` at
+    runtime when constructed dynamically or redirected cross-host. Offline
+    sidecar fixtures work without network capabilities so tests stay hermetic.
 - No `package.json`, no `node_modules`, no bundler (research: Deno URL
   imports proved the model; Go modules proved minimal-version-selection;
   cargo proved registry hygiene). The `use` line *is* the manifest.

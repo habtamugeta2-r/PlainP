@@ -29,7 +29,10 @@ def derive(node) -> dict | None:
         return {"role": role, "label": node.text, "line": node.source_line,
                 "children": children}
     if k in _ROLES:
-        label = (node.props.get("label") or node.text
+        shown_text = (""
+                      if k == "input" and "secret" in getattr(node, "flags", ())
+                      else node.text)
+        label = (node.props.get("label") or shown_text
                  or node.props.get("placeholder") or "")
         entry = {"role": _ROLES[k], "label": label, "line": node.source_line,
                  "children": children}

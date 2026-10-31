@@ -77,6 +77,27 @@ location-only identity (spoofable, stale-cache-prone), app-store gating
 (B3). Monetization hooks (Doc 00 §0.2.9) ride on signed authorship from
 this ADR.
 
+## ADR-9: Three-layer separation — PL Core, Clear Primitives, and Prelude UI (`std/ui`)
+PL language fundamentals must not hardcode widget catalogs into the compiler
+or engine. The stack separates cleanly into three layers while keeping PL's
+single-syntax, zero-boilerplate authoring:
+1. **PL Core (UI-agnostic language fundamentals):** kinds/variants, primitives,
+   state (`=`), reactive derivations (`is`), two-way `bind` references,
+   control flow (`if`/`for`/`when`), actions (`to`), modules (`use`),
+   capabilities (`needs`), resources (`from`), persistence (`keep`), and
+   generic block/element call syntax — runnable headless without Clear.
+2. **Clear Engine Primitives (~8 irreducible atoms):** Flow layout (`row`,
+   `column`, `stack`, `scroll`/`grid`), paint (`box`, `text`, `image`,
+   `canvas`), OS text-editing/IME bridge (`text-input`), and intrinsic
+   accessibility/interaction traits (`role`, `focusable`, `min-target`,
+   pointer/key states) on primitives so Axiom A9 (derived accessibility)
+   holds by construction.
+3. **Standard UI Prelude (`std/ui.plain`):** controls (`button`, `toggle`,
+   `slider`, `select`, `divider`, `spacer`, `spinner`, `table`/`header`/
+   `cell`, etc.) authored in `.plain` on top of PL Core + Clear atoms and
+   auto-loaded as prelude so both the Python oracle and Rust engine share
+   one UI kit implementation and dogfood PL's own component model.
+
 ---
 
 # Phase 4 — Proof-of-Concept Roadmap

@@ -1,7 +1,10 @@
 # PLAIN Stage-1 prototype — zero dependencies (Python 3.11+ stdlib only).
 PY ?= python3
 
-.PHONY: test check fmt-check validate hello counter todo a11y clean
+.PHONY: ci test check fmt-check validate hello counter todo a11y clean
+
+ci: test check fmt-check validate
+
 test:
 	PYTHONPATH=src $(PY) -m unittest discover -s tests -v
 
@@ -27,4 +30,4 @@ a11y:
 	./plain a11y examples/01-counter.plain
 
 clean:
-	rm -rf out src/plainlang/__pycache__ tests/__pycache__
+	rm -rf out build dist src/*.egg-info src/plainlang/__pycache__ tests/__pycache__

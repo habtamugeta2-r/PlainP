@@ -1,24 +1,26 @@
 """Checker: plain-sentence diagnostics (Doc 03 §10).
 
-Stage-1 checks (lenient toward Stage-2/3 syntax — a program using future
-features is *not* an error here; it only fails when rendered):
-  * unknown/misspelled node kinds (with did-you-mean)
+Stage-1–3 checks:
+  * unknown/misspelled node kinds (with did-you-mean), including inside actions
   * button/link with nothing to show (the spec's canonical error)
   * text with nothing to say
   * unknown property/flag on Stage-1-known nodes (with did-you-mean)
   * duplicate state names in one page/component
   * page missing its address
-  * `otherwise` is parser-caught; event-action and look names are resolved
-    (Stage 2); value names are still runtime-checked with plain messages
-    until full scope/type info lands.
+  * `needs` capability grammar + compile-time coverage for `keep` (`storage`)
+    and literal `http(s)://` URLs (`network <host>`) (HAB-70 / CHK-08)
+  * event-action and look names resolved; value names remain runtime-checked
+    until full scope/type resolution lands (HAB-79).
 """
 from __future__ import annotations
 
 import difflib
+import re
+import urllib.parse
 
 from .ast_nodes import (
-    ActionDecl, DerivedDecl, ForNode, IfNode, Node, RawStmt, StateDecl,
-    WhenNode,
+    ActionDecl, AssignStmt, Capability, DerivedDecl, ForNode, IfNode, KeepDecl,
+    Node, RawStmt, ResourceDecl, StateDecl, WhenNode,
 )
 from .errors import PlainError, PlainWarning
 from .expr import parse_expr
@@ -27,14 +29,128 @@ from .parser import FLAGS, NODE_KINDS, SPECIAL_PROPS, VALUE_PROPS_1, VALUE_PROPS
 _KNOWN_PROPS = VALUE_PROPS_1 | VALUE_PROPS_EXPR | SPECIAL_PROPS | {
     "material", "part", "retry", "error",
 }
-# Nodes whose prop/flag vocabulary we check strictly. Future nodes
-# (scene3d, table…) are left alone until their stages implement them.
 _CHECKED_KINDS = {"column", "row", "text", "button", "box", "image", "input",
                   "toggle", "divider", "stack", "scroll", "grid", "spacer"}
+
+_SCOPED_CAPS = {"network", "native"}
+_UNSCOPED_CAPS = {
+    "storage", "camera", "microphone", "location",
+    "clipboard", "notifications", "gpu-compute",
+}
+_ALL_CAPS = _SCOPED_CAPS | _UNSCOPED_CAPS
+
+_LITERAL_RES_URL_RE = re.compile(r'^(?:live\s+)?"(https?://[^"{]*)"\s*$')
+_LITERAL_REQ_URL_RE = re.compile(r'^(?:post|fetch)\s+"(https?://[^"{]*)"(?:\s|$)')
+
+
+def _check_capabilities(program, errors: list[PlainError]) -> None:
+    for cap in getattr(program, "capabilities", []):
+        if not cap.kind or cap.kind == "needs:":
+            errors.append(PlainError(
+                "`needs` must name at least one capability.",
+                line_no=cap.line_no, line_text=cap.raw or None,
+                hint="needs network api.example.com",
+                col=cap.col, length=max(1, cap.length)))
+            continue
+        raw_kind = cap.kind.rstrip(":")
+        if raw_kind not in _ALL_CAPS or cap.kind.endswith(":"):
+            close = difflib.get_close_matches(raw_kind, sorted(_ALL_CAPS),
+                                              n=1, cutoff=0.6)
+            hint = (f"did you mean `needs {close[0]}`?" if close else
+                    "capabilities include `network <host>`, `storage`, "
+                    "`camera`, `clipboard`, `notifications`")
+            errors.append(PlainError(
+                f"`{cap.kind}` isn't a capability PL knows.",
+                line_no=cap.line_no, line_text=cap.raw or None,
+                hint=hint, col=cap.col, length=max(1, len(cap.kind))))
+            continue
+        if cap.kind in _SCOPED_CAPS:
+            if not cap.target:
+                example = ("needs network api.example.com"
+                           if cap.kind == "network" else "needs native sqlite")
+                what = ("the host it talks to (no blanket internet access)"
+                        if cap.kind == "network" else "the library it loads")
+                errors.append(PlainError(
+                    f"`needs {cap.kind}` must name {what}.",
+                    line_no=cap.line_no, line_text=cap.raw or None,
+                    hint=example, col=cap.col, length=max(1, cap.length)))
+                continue
+            if cap.kind == "network":
+                tgt = cap.target.strip()
+                if "://" in tgt or "/" in tgt:
+                    parsed = urllib.parse.urlsplit(
+                        tgt if "://" in tgt else f"https://{tgt}")
+                    clean_host = parsed.netloc or "api.example.com"
+                    errors.append(PlainError(
+                        f"`needs network` takes a host name, not a full URL "
+                        f"(`{tgt}`).",
+                        line_no=cap.line_no, line_text=cap.raw or None,
+                        hint=f"needs network {clean_host}",
+                        col=cap.col, length=max(1, cap.length)))
+                elif "*" in tgt:
+                    errors.append(PlainError(
+                        f"`needs network` cannot use a wildcard (`{tgt}`) — "
+                        f"name each host explicitly.",
+                        line_no=cap.line_no, line_text=cap.raw or None,
+                        hint="needs network api.example.com",
+                        col=cap.col, length=max(1, cap.length)))
+                elif any(ch.isspace() for ch in tgt):
+                    errors.append(PlainError(
+                        "Separate multiple capabilities with a comma in `needs`.",
+                        line_no=cap.line_no, line_text=cap.raw or None,
+                        hint="needs network api.example.com, storage",
+                        col=cap.col, length=max(1, cap.length)))
+        elif cap.target is not None:
+            errors.append(PlainError(
+                f"`needs {cap.kind}` doesn't take `{cap.target}` after it.",
+                line_no=cap.line_no, line_text=cap.raw or None,
+                hint=f"needs {cap.kind}",
+                col=cap.col, length=max(1, cap.length)))
+
+
+def _check_url_capability(url: str, line_no: int, raw: str | None,
+                          col: int, length: int, program,
+                          errors: list[PlainError]) -> None:
+    allowed, host = program.allows_network_url(url)
+    if allowed:
+        return
+    suggest_host = host.split(":")[0] if ":" in host and not host.startswith("scheme") else host
+    errors.append(PlainError(
+        f"This line connects to `{host}`, which isn't listed in `needs`.",
+        line_no=line_no, line_text=raw,
+        hint=f"add `needs network {suggest_host}` at the top of this file",
+        col=col, length=max(1, length)))
+
+
+def _check_request_text_capability(text: str, line_no: int, raw: str | None,
+                                   col: int, program,
+                                   errors: list[PlainError]) -> None:
+    m = _LITERAL_REQ_URL_RE.match((text or "").strip())
+    if m:
+        url = m.group(1)
+        _check_url_capability(url, line_no, raw, col, len(url) + 2,
+                              program, errors)
 
 
 def check_program(program) -> list[PlainError]:
     errors: list[PlainError] = []
+    _check_capabilities(program, errors)
+
+    for stmt in getattr(program, "shared_decls", []):
+        if isinstance(stmt, ResourceDecl):
+            m = _LITERAL_RES_URL_RE.match(stmt.source.strip())
+            if m:
+                _check_url_capability(m.group(1), stmt.line_no,
+                                      stmt.raw or None, stmt.col,
+                                      len(stmt.name), program, errors)
+        elif isinstance(stmt, KeepDecl) and not program.has_capability("storage"):
+            errors.append(PlainError(
+                f"`keep {stmt.name}` saves data on this device, so this file "
+                f"must declare `needs storage`.",
+                line_no=stmt.line_no, line_text=stmt.raw or None,
+                hint="add `needs storage` at the top of this file",
+                col=stmt.col, length=max(1, len(f"keep {stmt.name}"))))
+
     for page in program.pages.values():
         if not page.path and not page.params:
             errors.append(PlainError(
@@ -55,6 +171,19 @@ def check_program(program) -> list[PlainError]:
                         line_no=stmt.line_no, line_text=stmt.raw or None,
                         col=stmt.col, length=max(1, len(stmt.name))))
                 seen[stmt.name] = stmt.line_no
+            elif isinstance(stmt, KeepDecl) and not program.has_capability("storage"):
+                errors.append(PlainError(
+                    f"`keep {stmt.name}` saves data on this device, so this "
+                    f"file must declare `needs storage`.",
+                    line_no=stmt.line_no, line_text=stmt.raw or None,
+                    hint="add `needs storage` at the top of this file",
+                    col=stmt.col, length=max(1, len(f"keep {stmt.name}"))))
+            elif isinstance(stmt, ResourceDecl):
+                m = _LITERAL_RES_URL_RE.match(stmt.source.strip())
+                if m:
+                    _check_url_capability(m.group(1), stmt.line_no,
+                                          stmt.raw or None, stmt.col,
+                                          len(stmt.name), program, errors)
         actions = {s.name for s in owner.body if isinstance(s, ActionDecl)}
         _check_block(owner.body, program, errors, visual=True, actions=actions,
                      owner_name=getattr(owner, "name", ""))
@@ -86,7 +215,15 @@ def _check_block(stmts, program, errors, visual, actions=frozenset(), owner_name
     for stmt in stmts:
         if isinstance(stmt, Node):
             _check_node(stmt, program, errors, actions, owner_name)
+        elif isinstance(stmt, AssignStmt):
+            _check_request_text_capability(stmt.expr, stmt.line_no,
+                                           stmt.raw or None, stmt.col,
+                                           program, errors)
         elif isinstance(stmt, IfNode):
+            if stmt.inline_then:
+                _check_request_text_capability(stmt.inline_then, stmt.line_no,
+                                               stmt.raw or None, stmt.col,
+                                               program, errors)
             _check_block(stmt.then_body, program, errors, visual, actions, owner_name)
             _check_block(stmt.else_body, program, errors, visual, actions, owner_name)
         elif isinstance(stmt, ForNode):
@@ -95,6 +232,9 @@ def _check_block(stmts, program, errors, visual, actions=frozenset(), owner_name
             for br in stmt.branches:
                 _check_block(br.body, program, errors, visual, actions, owner_name)
         elif isinstance(stmt, RawStmt):
+            _check_request_text_capability(stmt.text, stmt.line_no,
+                                           stmt.raw or stmt.text, stmt.col,
+                                           program, errors)
             for child in stmt.children or []:
                 _check_block([child], program, errors, visual, actions, owner_name)
             head = stmt.text.split()[0].rstrip(":") if stmt.text.split() else ""
@@ -145,6 +285,14 @@ def _check_node(node: Node, program, errors, actions=frozenset(), owner_name="")
                     f"`on {ev.name}` to run.", line_no=node.line_no,
                     line_text=ev.raw or node.raw or None, hint=hint,
                     col=ev.col, length=ev.length))
+        if ev.inline:
+            inline_rhs = ev.inline.split("=", 1)[1].strip() if "=" in ev.inline else ev.inline
+            _check_request_text_capability(inline_rhs, ev.line_no or node.line_no,
+                                           ev.raw or node.raw or None,
+                                           ev.col or node.col, program, errors)
+        if ev.block:
+            _check_block(ev.block, program, errors, visual=False,
+                         actions=actions, owner_name=owner_name)
     # looks must exist
     for p in node.props:
         if p.name == "look":
